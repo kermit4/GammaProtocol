@@ -22,7 +22,8 @@ library Actions {
         WithdrawCollateral,
         SettleVault,
         Redeem,
-        Call
+        Call,
+        Liquidate
     }
 
     struct ActionArgs {
@@ -82,6 +83,8 @@ library Actions {
         address owner;
         // vault id to create
         uint256 vaultId;
+        // need to encode in data field
+        uint256 marginType;
     }
 
     struct DepositArgs {
@@ -141,6 +144,20 @@ library Actions {
         bytes data;
     }
 
+    struct LiquidateArgs {
+        // address of the account owner
+        address owner;
+        // index of the vault to which is to be settled
+        uint256 vaultId;
+        address from;
+        // to: secondAddress
+        address to;
+        // otoken amount to burn
+        uint256 amount;
+        // oracle roundId
+        uint256 roundId;
+    }
+
     /**
      * @notice parses the passed in action arguments to get the arguments for an open vault action
      * @param _args general action arguments structure
@@ -149,8 +166,8 @@ library Actions {
     function _parseOpenVaultArgs(ActionArgs memory _args) internal pure returns (OpenVaultArgs memory) {
         require(_args.actionType == ActionType.OpenVault, "Actions: can only parse arguments for open vault actions");
         require(_args.owner != address(0), "Actions: cannot open vault for an invalid account");
-
-        return OpenVaultArgs({owner: _args.owner, vaultId: _args.vaultId});
+        // switch to encoding marginType in data
+        return OpenVaultArgs({owner: _args.owner, vaultId: _args.vaultId, marginType: _args.index});
     }
 
     /**
@@ -278,5 +295,19 @@ library Actions {
         require(_args.secondAddress != address(0), "Actions: target address cannot be address(0)");
 
         return CallArgs({callee: _args.secondAddress, data: _args.data});
+    }
+
+    function _parseLiquidateArgs(ActionArgs memory _args) internal view returns (LiquidateArgs memory) {
+        require(_args.actionType == ActionType.Liquidate, "Actions: can only parse arguments for liquidate actions");
+
+        return
+            LiquidateArgs({
+                owner: _args.owner,
+                vaultId: _args.vaultId,
+                to: _args.secondAddress,
+                amount: _args.amount,
+                roundId: _args.index,
+                from: msg.sender
+            });
     }
 }

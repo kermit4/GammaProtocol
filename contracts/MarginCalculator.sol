@@ -50,10 +50,35 @@ contract MarginCalculator {
         bool hasCollateral;
     }
 
+    uint256[] internal ptimes = [
+        // one day
+        86400000,
+        // three days
+        259200000,
+        // one week
+        604800000,
+        // two weeks
+        1209600000,
+        // four weeks
+        2419200000
+    ];
+
+    mapping(uint256 => uint256) internal pvalues;
+    uint256 internal pvalueDecimals = 12;
+    // auction length (set to one day)
+    uint256 internal AUCTION_LENGTH = 86400000;
+
     constructor(address _oracle) public {
         require(_oracle != address(0), "MarginCalculator: invalid oracle address");
 
         oracle = OracleInterface(_oracle);
+
+        // pvalues have twelve decimals
+        pvalues[86400000] = 52166761240;
+        pvalues[259200000] = 90226787870;
+        pvalues[604800000] = 137432041400;
+        pvalues[1209600000] = 193395770500;
+        pvalues[2419200000] = 281783870500;
     }
 
     /**
@@ -533,5 +558,198 @@ contract MarginCalculator {
         }
 
         return vaultDetails;
+    }
+
+    /**
+     * @notice convert an amount of otoken to current amount of collateral, based on historical price
+     * @param vault, the vault to be checked
+     * @return amount of excess margin
+     */
+    function getExcessNakedMargin(MarginVault.Vault memory vault) external view returns (uint256, bool) {
+        VaultDetails memory vaultDetails = getVaultDetails(vault);
+        require(vaultDetails.hasShort, "Vault has no short token.");
+        uint256 otokenExpiry = vaultDetails.shortExpiryTimestamp;
+        bool expired = now > otokenExpiry;
+
+        if (expired) {
+            FPI.FixedPointInt memory collateralAmount = FPI.fromScaledUint(
+                vault.collateralAmounts[0],
+                vaultDetails.collateralDecimals
+            );
+            FPI.FixedPointInt memory shortCashValue = _getExpiredCashValue(
+                vaultDetails.shortUnderlyingAsset,
+                vaultDetails.shortStrikeAsset,
+                vaultDetails.shortExpiryTimestamp,
+                vaultDetails.shortStrikePrice,
+                vaultDetails.isShortPut
+            );
+
+            FPI.FixedPointInt memory excessCollateral = collateralAmount.sub(shortCashValue);
+            bool isExcess = excessCollateral.isGreaterThanOrEqual(ZERO);
+            // if is excess, truncate the tailing digits in excessCollateralExternal calculation
+            uint256 excessCollateralExternal = excessCollateral.toScaledUint(
+                vaultDetails.shortCollateralDecimals,
+                isExcess
+            );
+            return (excessCollateralExternal, isExcess);
+        } else {
+            // get current price
+            uint256 collateralAmount = vault.collateralAmounts[0];
+            uint256 currentPrice = oracle.getPrice(vaultDetails.shortUnderlyingAsset);
+            uint256 shortAmount = vault.shortAmounts[0];
+            uint256 collateralRequiredPerOtoken = getNakedMarginRequirements(
+                vaultDetails.shortStrikePrice,
+                currentPrice,
+                otokenExpiry,
+                vaultDetails.isShortPut,
+                vaultDetails.shortCollateralDecimals
+            );
+            uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(10**8);
+            if (collateralAmount > collateralRequired) {
+                return (collateralAmount.sub(collateralRequired), true);
+            } else {
+                return (collateralRequired.sub(collateralAmount), false);
+            }
+        }
+    }
+
+    // gets the margin requirements given a historical roundId
+    function getHistoricalExcessNakedMargin(MarginVault.Vault memory vault, uint256 historicalPrice)
+        public
+        view
+        returns (uint256, bool)
+    {
+        VaultDetails memory vaultDetails = getVaultDetails(vault);
+        require(vaultDetails.hasShort, "Vault has no short token.");
+
+        uint256 shortAmount = vault.shortAmounts[0];
+        uint256 collateralAmount = vault.collateralAmounts[0];
+        uint256 collateralRequiredPerOtoken = getNakedMarginRequirements(
+            vaultDetails.shortStrikePrice,
+            historicalPrice,
+            vaultDetails.shortExpiryTimestamp,
+            vaultDetails.isShortPut,
+            vaultDetails.shortCollateralDecimals
+        );
+        uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(BASE);
+        if (collateralAmount > collateralRequired) {
+            return (collateralAmount.sub(collateralRequired), true);
+        } else {
+            return (collateralRequired.sub(collateralAmount), false);
+        }
+    }
+
+    /**
+     * @dev returns the partial collateralization requirements per otoken
+     * does not depend on the partiuclar vault
+     * @param strike, the strike price of the otoken
+     * @param spot the spot price of the underlying
+     * @param expiry the expiry time of the otoken
+     * @param isPut true if the otoken is a put
+     */
+    function getNakedMarginRequirements(
+        uint256 strike,
+        uint256 spot,
+        uint256 expiry,
+        bool isPut,
+        uint256 collateralDecimals
+    ) public view returns (uint256) {
+        uint256 t = expiry.sub(now);
+        if (isPut) {
+            // if isPut return value will have strike decimals
+            if (strike < spot.mul(3).div(4)) {
+                // p(t) * K
+                return p(t).mul(strike).div(10e12);
+            } else {
+                // p(t) * (.75 * S) + (K - .75 * S)
+                return p(t).mul(3).mul(spot).div(4).div(10e12).add(strike.sub(spot.mul(3).div(4)));
+            }
+        } else {
+            // if (!isPut) return value will have collateral decimals
+            if (strike < spot.mul(4).div(3)) {
+                // shortCollateralDecimals
+                // output needs to be in underlying decimals, strike and spot are in strike decimals (BASE).
+                // 1 - (4/3)(K/S) + P(t) * (4/3)(K/S) = 1 - (1 -p(t))(4/3)(K/S)
+                uint256 A = ((10**pvalueDecimals).sub(p(t))).mul(4).mul(strike).div(3).div(spot);
+                uint256 B = (10**pvalueDecimals).sub(A);
+                return B.mul(collateralDecimals).div(pvalueDecimals);
+            } else {
+                // simply p(t) in collateral decimals
+                return p(t).mul(collateralDecimals).div(pvalueDecimals);
+            }
+        }
+    }
+
+    // p values have twelve decimals
+    function p(uint256 timeToExpiry) internal view returns (uint256) {
+        uint256 i = 0;
+        while (ptimes[i] > timeToExpiry && i < ptimes.length) {
+            i++;
+        }
+        require(i < ptimes.length, "timeToExpiry out of range");
+        return pvalues[ptimes[i]];
+    }
+
+    // /**
+    //  * @notice convert an amount of otoken to current amount of collateral, based on historical price
+    //  * @param _vault, the vault to be liquidated
+    //  * @param roundId  the historical chainlink roundId
+    //  * @param amount the amount of otoken debt to offer.
+    //  * @return amount of collateral the liquidator receives
+    //  */
+    uint256 internal deviationFactor = 1;
+    uint256 internal deviationDecimals = 2;
+
+    function getLiquidationFactor(
+        MarginVault.Vault memory vault,
+        uint256 roundId,
+        uint256 lastCheckedMargin
+    ) external view returns (uint256) {
+        VaultDetails memory vaultDetails = getVaultDetails(vault);
+        (uint256 price, uint256 startTime) = oracle.getHistoricalPrice(vaultDetails.shortUnderlyingAsset, roundId);
+
+        require(startTime < now, "invalid startTime");
+        require(
+            startTime > lastCheckedMargin,
+            "vault was adjusted more recently than the timestamp of the historical price."
+        );
+        require(now < vaultDetails.shortExpiryTimestamp, "short otoken has already expired.");
+
+        bool isExcess;
+        (, isExcess) = getHistoricalExcessNakedMargin(vault, price);
+        require(!isExcess, "vault was not under-collateralized at the roundId.");
+        uint256 timeElapsed = now.sub(startTime);
+        // watch decimals
+        uint256 B = vault.collateralAmounts[0].mul(BASE).div(vault.shortAmounts[0]).div(
+            10**vaultDetails.shortCollateralDecimals
+        );
+        if (timeElapsed > AUCTION_LENGTH) return B;
+
+        // deviation = D*S
+        uint256 deviation = deviationFactor.mul(price).div(10**deviationDecimals);
+        uint256 A;
+
+        uint256 strike = vaultDetails.shortStrikePrice;
+        // determine cash value
+        {
+            if (vaultDetails.isShortPut) {
+                // put
+                if (vaultDetails.shortStrikePrice > price) {
+                    if (strike <= price + deviation)
+                        A = 0;
+                        // CV - D*S
+                    else A = strike.sub(price).sub(deviation);
+                } else {
+                    // call
+                    if (strike <= price + deviation) A = 0;
+                    else A = strike.sub(price).sub(deviation).div(price).mul(BASE);
+                }
+            }
+        }
+
+        // check formula.
+        // what are the decimals of the liquidation factor ? same as collateral ?
+        // or fixed to BASE ?
+        return A.add(timeElapsed.div(AUCTION_LENGTH).mul(B.sub(A)));
     }
 }

@@ -4,6 +4,7 @@
 pragma solidity 0.6.10;
 
 import {OpynPricerInterface} from "./interfaces/OpynPricerInterface.sol";
+import {HistoricalPricerInterface} from "./interfaces/HistoricalPricerInterface.sol";
 import {Ownable} from "./packages/oz/Ownable.sol";
 import {SafeMath} from "./packages/oz/SafeMath.sol";
 
@@ -70,6 +71,7 @@ contract Oracle is Ownable {
      * e.g. 17568900000 => 175.689 USD
      */
     function getPrice(address _asset) external view returns (uint256) {
+        // check if stablePrice
         uint256 price = stablePrice[_asset];
 
         if (price == 0) {
@@ -294,5 +296,13 @@ contract Oracle is Ownable {
 
         storedPrice[_asset][_expiryTimestamp] = Price(_price, now);
         emit ExpiryPriceUpdated(_asset, _expiryTimestamp, _price, now);
+    }
+
+    function getHistoricalPrice(address _asset, uint256 roundId) external view returns (uint256, uint256) {
+        require(assetPricer[_asset] != address(0), "Oracle: Pricer for this asset not set");
+
+        (uint256 price, uint256 timestamp) = HistoricalPricerInterface(assetPricer[_asset]).getHistoricalPrice(roundId);
+
+        return (price, timestamp);
     }
 }

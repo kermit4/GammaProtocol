@@ -4,12 +4,13 @@ pragma solidity 0.6.10;
 import {AggregatorInterface} from "../interfaces/AggregatorInterface.sol";
 import {OracleInterface} from "../interfaces/OracleInterface.sol";
 import {OpynPricerInterface} from "../interfaces/OpynPricerInterface.sol";
+import {HistoricalPricerInterface} from "../interfaces/HistoricalPricerInterface.sol";
 import {SafeMath} from "../packages/oz/SafeMath.sol";
 
 /**
  * @notice A Pricer contract for one asset as reported by Chainlink
  */
-contract ChainLinkPricer is OpynPricerInterface {
+contract ChainLinkPricer is OpynPricerInterface, HistoricalPricerInterface {
     using SafeMath for uint256;
 
     /// @notice the opyn oracle address
@@ -78,5 +79,13 @@ contract ChainLinkPricer is OpynPricerInterface {
 
         uint256 price = uint256(aggregator.getAnswer(_roundId));
         oracle.setExpiryPrice(asset, _expiryTimestamp, price);
+    }
+
+    function getHistoricalPrice(uint256 roundId) external override view returns (uint256, uint256) {
+        uint256 timestamp = aggregator.getTimestamp(roundId);
+        require(timestamp > 0, "ChainLinkPricer: Round not complete");
+        int256 price = aggregator.getAnswer(roundId);
+        require(price > 0, "ChainLinkPricer: Price less than or equal to zero.");
+        return (uint256(price), timestamp);
     }
 }

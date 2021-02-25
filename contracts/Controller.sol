@@ -339,7 +339,13 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
      */
     function operate(Actions.ActionArgs[] memory _actions) external nonReentrant notFullyPaused {
         (bool vaultUpdated, address vaultOwner, uint256 vaultId) = _runActions(_actions);
-        if (vaultUpdated) _verifyFinalState(vaultOwner, vaultId);
+        if (vaultUpdated) {
+            _verifyFinalState(vaultOwner, vaultId);
+
+            if (marginType[vaultOwner][vaultId] == 1) {
+                lastCheckedMargin[vaultOwner][vaultId] = now;
+            }
+        }
     }
 
     /**
@@ -475,7 +481,8 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
             if (
                 (actionType != Actions.ActionType.SettleVault) &&
                 (actionType != Actions.ActionType.Redeem) &&
-                (actionType != Actions.ActionType.Call)
+                (actionType != Actions.ActionType.Call) &&
+                (actionType != Actions.ActionType.Liquidate)
             ) {
                 // check if this action is manipulating the same vault as all other actions, if a vault has already been updated
                 if (vaultUpdated) {
@@ -507,6 +514,8 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
                 _settleVault(Actions._parseSettleVaultArgs(action));
             } else if (actionType == Actions.ActionType.Call) {
                 _call(Actions._parseCallArgs(action));
+            } else if (actionType == Actions.ActionType.Liquidate) {
+                _liquidate(Actions._parseLiquidateArgs(action));
             }
         }
 
@@ -520,9 +529,14 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
      */
     function _verifyFinalState(address _owner, uint256 _vaultId) internal view {
         MarginVault.Vault memory _vault = getVault(_owner, _vaultId);
-        (, bool isValidVault) = calculator.getExcessCollateral(_vault);
 
-        require(isValidVault, "Controller: invalid final vault state");
+        if (marginType[_owner][_vaultId] == 1) {
+            (, bool isValidVault) = calculator.getExcessNakedMargin(_vault);
+            require(isValidVault, "Controller: invalid final vault state");
+        } else {
+            (, bool isValidVault) = calculator.getExcessCollateral(_vault);
+            require(isValidVault, "Controller: invalid final vault state");
+        }
     }
 
     /**
@@ -540,7 +554,7 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
         require(_args.vaultId == vaultId, "Controller: can not run actions on inexistent vault");
 
         accountVaultCounter[_args.owner] = vaultId;
-
+        marginType[_args.owner][vaultId] = _args.marginType;
         emit VaultOpened(_args.owner, vaultId);
     }
 
@@ -555,6 +569,7 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
         onlyAuthorized(msg.sender, _args.owner)
     {
         require(_checkVaultId(_args.owner, _args.vaultId), "Controller: invalid vault id");
+        require(marginType[_args.owner][_args.vaultId] != 0, "Long tokens not allowed in naked margin vault");
         require(
             (_args.from == msg.sender) || (_args.from == _args.owner),
             "Controller: cannot deposit long otoken from this address"
@@ -758,12 +773,24 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
             "Controller: asset prices not finalized yet"
         );
 
-        (uint256 payout, ) = calculator.getExcessCollateral(vault);
+        uint256 payout;
+        if (marginType[_args.owner][_args.vaultId] == 0) {
+            // regular max loss
+            // very important that we do not allow collateral updates after expiry.
+            (payout, ) = calculator.getExcessCollateral(vault);
 
-        if (hasLong) {
-            OtokenInterface longOtoken = OtokenInterface(vault.longOtokens[0]);
+            if (hasLong) {
+                OtokenInterface longOtoken = OtokenInterface(vault.longOtokens[0]);
 
-            longOtoken.burnOtoken(address(pool), vault.longAmounts[0]);
+                longOtoken.burnOtoken(address(pool), vault.longAmounts[0]);
+            }
+        } else {
+            // naked margin
+            // be careful, need to check isExcess!
+            // otherwise the vault is undercollateralized
+            bool isExcess;
+            (payout, isExcess) = calculator.getExcessNakedMargin(vault);
+            require(isExcess, "no collateral to payout.");
         }
 
         delete vaults[_args.owner][_args.vaultId];
@@ -820,5 +847,43 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
         oracle = OracleInterface(addressbook.getOracle());
         calculator = MarginCalculatorInterface(addressbook.getMarginCalculator());
         pool = MarginPoolInterface(addressbook.getMarginPool());
+    }
+
+    // liquidations
+    //
+
+    // lastCheckedMargin[user][vaultId] == 0 if maxLoss
+    // lastCheckedMargin[user][vaultId] > 0 if the user is partially collateralized,
+    // in which case the value is the last time the vault was verified to be safe
+    mapping(address => mapping(uint256 => uint256)) internal lastCheckedMargin;
+    mapping(address => mapping(uint256 => uint256)) internal marginType;
+
+    // ?
+    // function isVaultUnsafe(address user, uint256 vaultId) public view returns (bool) {
+    //     MarginVault.Vault memory vault = getVault(user, vaultId);
+    //     oracle.getPrice(_asset);
+    //     bool isVaultPartiallyCollateralized =
+    //     calculator.getPartialCollateralizationAmount
+    // }
+    // // liquidate
+    // function liquidate(address owner, uint256 vaultId, uint256 to, uint256 amount, uint256 roundId) public {
+
+    // }
+
+    function _liquidate(Actions.LiquidateArgs memory _args) internal notPartiallyPaused {
+        require(marginType[_args.owner][_args.vaultId] == 1, "vault is not naked margin.");
+        MarginVault.Vault memory vault = getVault(_args.owner, _args.vaultId);
+        uint256 liquidationFactor = calculator.getLiquidationFactor(
+            vault,
+            _args.roundId,
+            lastCheckedMargin[_args.owner][_args.vaultId]
+        );
+        uint256 collateralAmount = _args.amount.mul(liquidationFactor).div(10**8);
+        // we can burn from the controller :)
+        OtokenInterface otoken = OtokenInterface(vault.shortOtokens[0]);
+        otoken.burnOtoken(_args.from, _args.amount);
+        // need collateral asset
+        address asset = vault.collateralAssets[0];
+        pool.transferToUser(asset, _args.to, collateralAmount);
     }
 }
