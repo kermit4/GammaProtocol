@@ -58,7 +58,7 @@ export const createTokenAmount = (num: number | BigNumber, decimals = 8) => {
 }
 
 /**
- * Create a number string that scales numbers to 1e18
+ * Create a number string that scales numbers to 1e8
  * @param num
  */
 export const createScaledNumber = (num: number): string => {

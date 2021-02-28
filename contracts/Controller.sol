@@ -386,8 +386,12 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
      */
     function getProceed(address _owner, uint256 _vaultId) external view returns (uint256) {
         MarginVault.Vault memory vault = getVault(_owner, _vaultId);
-
-        (uint256 netValue, ) = calculator.getExcessCollateral(vault);
+        uint256 netValue;
+        if (marginType[_owner][_vaultId] == 1) {
+            bool isExcess;
+            (netValue, isExcess) = calculator.getExcessNakedMargin(vault);
+            if (!isExcess) netValue = 0;
+        } else (netValue, ) = calculator.getExcessCollateral(vault);
         return netValue;
     }
 
@@ -569,7 +573,7 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
         onlyAuthorized(msg.sender, _args.owner)
     {
         require(_checkVaultId(_args.owner, _args.vaultId), "Controller: invalid vault id");
-        require(marginType[_args.owner][_args.vaultId] != 0, "Long tokens not allowed in naked margin vault");
+        require(marginType[_args.owner][_args.vaultId] == 0, "Controller: Long otokens not allowed in this vault");
         require(
             (_args.from == msg.sender) || (_args.from == _args.owner),
             "Controller: cannot deposit long otoken from this address"

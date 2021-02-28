@@ -52,21 +52,21 @@ contract MarginCalculator {
 
     uint256[] internal ptimes = [
         // one day
-        86400000,
+        86400,
         // three days
-        259200000,
+        259200,
         // one week
-        604800000,
+        604800,
         // two weeks
-        1209600000,
+        1209600,
         // four weeks
-        2419200000
+        2419200
     ];
 
     mapping(uint256 => uint256) internal pvalues;
     uint256 internal pvalueDecimals = 12;
     // auction length (set to one day)
-    uint256 internal AUCTION_LENGTH = 86400000;
+    uint256 internal AUCTION_LENGTH = 86400;
 
     constructor(address _oracle) public {
         require(_oracle != address(0), "MarginCalculator: invalid oracle address");
@@ -74,11 +74,11 @@ contract MarginCalculator {
         oracle = OracleInterface(_oracle);
 
         // pvalues have twelve decimals
-        pvalues[86400000] = 52166761240;
-        pvalues[259200000] = 90226787870;
-        pvalues[604800000] = 137432041400;
-        pvalues[1209600000] = 193395770500;
-        pvalues[2419200000] = 281783870500;
+        pvalues[86400] = 52166761235;
+        pvalues[259200] = 90226787871;
+        pvalues[604800] = 137432041436;
+        pvalues[1209600] = 193395770533;
+        pvalues[2419200] = 281783870466;
     }
 
     /**
@@ -567,7 +567,12 @@ contract MarginCalculator {
      */
     function getExcessNakedMargin(MarginVault.Vault memory vault) external view returns (uint256, bool) {
         VaultDetails memory vaultDetails = getVaultDetails(vault);
-        require(vaultDetails.hasShort, "Vault has no short token.");
+
+        if (!vaultDetails.hasShort) {
+            if (vaultDetails.hasCollateral) return (vault.collateralAmounts[0], true);
+            return (0, true);
+        }
+
         uint256 otokenExpiry = vaultDetails.shortExpiryTimestamp;
         bool expired = now > otokenExpiry;
 
@@ -644,49 +649,50 @@ contract MarginCalculator {
      * does not depend on the partiuclar vault
      * @param strike, the strike price of the otoken
      * @param spot the spot price of the underlying
-     * @param expiry the expiry time of the otoken
+     * @param timeToExpiry time until expiry of the option
      * @param isPut true if the otoken is a put
      */
     function getNakedMarginRequirements(
         uint256 strike,
         uint256 spot,
-        uint256 expiry,
+        uint256 timeToExpiry,
         bool isPut,
         uint256 collateralDecimals
     ) public view returns (uint256) {
-        uint256 t = expiry.sub(now);
         if (isPut) {
             // if isPut return value will have strike decimals
             if (strike < spot.mul(3).div(4)) {
                 // p(t) * K
-                return p(t).mul(strike).div(10e12);
+                return _p(timeToExpiry).mul(strike).div(10**12);
             } else {
                 // p(t) * (.75 * S) + (K - .75 * S)
-                return p(t).mul(3).mul(spot).div(4).div(10e12).add(strike.sub(spot.mul(3).div(4)));
+                return _p(timeToExpiry).mul(3).mul(spot).div(4).div(10**12).add(strike.sub(spot.mul(3).div(4)));
             }
         } else {
             // if (!isPut) return value will have collateral decimals
-            if (strike < spot.mul(4).div(3)) {
+            if (spot > strike.mul(4).div(3)) {
                 // shortCollateralDecimals
                 // output needs to be in underlying decimals, strike and spot are in strike decimals (BASE).
                 // 1 - (4/3)(K/S) + P(t) * (4/3)(K/S) = 1 - (1 -p(t))(4/3)(K/S)
-                uint256 A = ((10**pvalueDecimals).sub(p(t))).mul(4).mul(strike).div(3).div(spot);
-                uint256 B = (10**pvalueDecimals).sub(A);
-                return B.mul(collateralDecimals).div(pvalueDecimals);
+                uint256 A = (10**collateralDecimals).sub(
+                    _p(timeToExpiry).mul(10**collateralDecimals).div(10**pvalueDecimals)
+                );
+                uint256 B = A.mul(4).mul(strike).div(3).div(spot);
+                return (10**collateralDecimals).sub(B);
             } else {
                 // simply p(t) in collateral decimals
-                return p(t).mul(collateralDecimals).div(pvalueDecimals);
+                return _p(timeToExpiry).mul(10**collateralDecimals).div(10**pvalueDecimals);
             }
         }
     }
 
     // p values have twelve decimals
-    function p(uint256 timeToExpiry) internal view returns (uint256) {
+    function _p(uint256 timeToExpiry) internal view returns (uint256) {
         uint256 i = 0;
-        while (ptimes[i] > timeToExpiry && i < ptimes.length) {
+        while (i < ptimes.length && ptimes[i] < timeToExpiry) {
             i++;
         }
-        require(i < ptimes.length, "timeToExpiry out of range");
+        require(i < ptimes.length, "MarginCalculator: timeToExpiry out of range");
         return pvalues[ptimes[i]];
     }
 

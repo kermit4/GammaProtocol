@@ -24,4 +24,8 @@ contract CalculatorTester is MarginCalculator {
                 true
             );
     }
+
+    function p(uint256 timeToExpiry) external view returns (uint256) {
+        return _p(timeToExpiry);
+    }
 }
