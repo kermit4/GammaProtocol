@@ -81,11 +81,11 @@ contract ChainLinkPricer is OpynPricerInterface, HistoricalPricerInterface {
         oracle.setExpiryPrice(asset, _expiryTimestamp, price);
     }
 
-    function getHistoricalPrice(uint256 roundId) external override view returns (uint256, uint256) {
-        uint256 timestamp = aggregator.getTimestamp(roundId);
+    function getHistoricalPrice(uint256 _roundId) external override view returns (uint256, uint256) {
+        uint256 timestamp = aggregator.getTimestamp(_roundId);
         require(timestamp > 0, "ChainLinkPricer: Round not complete");
-        int256 price = aggregator.getAnswer(roundId);
-        require(price > 0, "ChainLinkPricer: Price less than or equal to zero.");
+        int256 price = aggregator.getAnswer(_roundId);
+        require(price > 0, "ChainLinkPricer: Price less than or equal to zero");
         return (uint256(price), timestamp);
     }
 }

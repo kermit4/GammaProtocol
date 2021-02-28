@@ -5,7 +5,7 @@ import {
   MockOracleInstance,
   MockOtokenInstance,
 } from '../../build/types/truffle-types'
-import {createVault, createScaledNumber as scaleNum, createTokenAmount} from '../utils'
+import {createVault, createScaledNumber as scaleNum, createTokenAmount, vault} from '../utils'
 import {assert} from 'chai'
 
 import BigNumber from 'bignumber.js'
@@ -13,7 +13,6 @@ import BigNumber from 'bignumber.js'
 const {expectRevert, time} = require('@openzeppelin/test-helpers')
 const MockAddressBook = artifacts.require('MockAddressBook.sol')
 const MockOracle = artifacts.require('MockOracle.sol')
-const MockChainlinkAggregator = artifacts.require('MockChainlinkAggregator.sol')
 
 const MockOtoken = artifacts.require('MockOtoken.sol')
 const MockERC20 = artifacts.require('MockERC20.sol')
@@ -21,6 +20,7 @@ const MarginCalculator = artifacts.require('CalculatorTester.sol')
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 contract('MarginCalculator', () => {
   let expiry: number
+  let pastExpiry: number
 
   let calculator: CalculatorTesterInstance
   let addressBook: MockAddressBookInstance
@@ -32,6 +32,8 @@ contract('MarginCalculator', () => {
   let eth100Put: MockOtokenInstance
   // eth puts cUSDC collateral
   let eth300PutCUSDC: MockOtokenInstance
+
+  let expiredPut: MockOtokenInstance
 
   // eth calls
   let eth300Call: MockOtokenInstance
@@ -65,7 +67,8 @@ contract('MarginCalculator', () => {
 
   before('set up contracts', async () => {
     const now = (await time.latest()).toNumber()
-    expiry = now + time.duration.days(30).toNumber()
+    expiry = now + time.duration.days(1).toNumber()
+    pastExpiry = now - time.duration.days(1).toNumber()
     // initiate addressbook first.
     addressBook = await MockAddressBook.new()
     // setup oracle
@@ -121,25 +124,18 @@ contract('MarginCalculator', () => {
       expiry,
       false,
     )
+
+    expiredPut = await MockOtoken.new()
+    await expiredPut.init(
+      addressBook.address,
+      weth.address,
+      usdc.address,
+      usdc.address,
+      scaleNum(300),
+      pastExpiry,
+      true,
+    )
   })
-
-  //   describe('Verify liquidation factors', () => {
-  //     const amountOne = scaleNum(1)
-  //     const ethPrice = createTokenAmount(300, chainlinkDecimals)
-
-  //     before(async () => {
-  //       await oracle.setHistoricalPrice(weth.address, 10, ethPrice)
-  //     })
-
-  //     it('p(0)', async () => {
-  //       // const expectOutput = createTokenAmount(0.4, wethDecimals)
-
-  //       const vault = createVault(eth200Call.address, undefined, weth.address, amountOne, undefined, '0')
-  //       const p = await calculator.getLiquidationFactor(vault, 1233, 1)
-  //       console.log(p.toString())
-  //       assert.equal(p.toString(), '0')
-  //     })
-  //   })
 
   describe('check p(t)', async () => {
     const pvalues = [52166761235, 90226787871, 137432041436, 193395770533, 281783870466]
@@ -250,6 +246,206 @@ contract('MarginCalculator', () => {
 
       const marginRequired = await calculator.getNakedMarginRequirements(K, S, '86400', false, '18')
       assert.equal(marginRequired.toString(), expectedMarginRequired.toString())
+    })
+  })
+
+  describe('getHistoricalExcessNakedMargin', async () => {
+    let now: number
+    let putVault: vault
+    let callVault: vault
+    let emptyVault: vault
+    let roundId: number
+    let futureRoundId: number
+    let futureTimestamp: number
+    let historicalTimestamp: number
+    let ethPrice: BigNumber
+
+    before('setup oracle', async () => {
+      roundId = 100
+      futureRoundId = 300
+
+      ethPrice = new BigNumber('1000e8')
+
+      now = (await time.latest()).toNumber()
+      historicalTimestamp = now - time.duration.days(5).toNumber()
+      await oracle.setHistoricalPrice(weth.address, roundId, ethPrice, historicalTimestamp)
+    })
+
+    before('setup vaults', async () => {
+      // putVault = createVault(
+      //   eth250Put.address,
+      //   undefined,
+      //   usdc.address,
+      //   scaleNum(1),
+      //   undefined,
+      //   createTokenAmount(100, usdcDecimals),
+      // )
+      // callVault = createVault(
+      //   eth250Call.address,
+      //   undefined,
+      //   weth.address,
+      //   scaleNum(1),
+      //   undefined,
+      //   createTokenAmount(1, wethDecimals),
+      // )
+    })
+
+    it('should revert if there is no short token.', async () => {
+      const timestamp = now - time.duration.days(5).toNumber()
+      const emptyVault = createVault(
+        undefined,
+        undefined,
+        weth.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(100, wethDecimals),
+      )
+      await expectRevert(
+        calculator.getHistoricalExcessNakedMargin(emptyVault, ethPrice, timestamp),
+        'MarginCalculator: Vault has no short token',
+      )
+    })
+
+    it('should revert if the short token was expired at the provided timestamp', async () => {
+      const timestamp = now + time.duration.days(2).toNumber()
+      const vault = createVault(
+        eth250Put.address,
+        undefined,
+        usdc.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(100, usdcDecimals),
+      )
+      await expectRevert(
+        calculator.getHistoricalExcessNakedMargin(vault, ethPrice, timestamp),
+        'MarginCalculator: short token was expired at the timestamp',
+      )
+    })
+
+    it('should revert if the collateral type is wrong', async () => {
+      const timestamp = now - time.duration.hours(5).toNumber()
+      // vault has the wrong collateral
+      const mismatchedVault = createVault(
+        eth250Put.address,
+        undefined,
+        weth.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(100, wethDecimals),
+      )
+      await expectRevert(
+        calculator.getHistoricalExcessNakedMargin(mismatchedVault, ethPrice, timestamp),
+        'MarginCalculator: collateral asset not marginable for short asset',
+      )
+    })
+
+    it('get historical excess margin for put', async () => {
+      const timestamp = now - time.duration.hours(5).toNumber()
+      const vault = createVault(
+        eth250Put.address,
+        undefined,
+        usdc.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(250, usdcDecimals),
+      )
+      const [excessMargin, isExcess] = await calculator.getHistoricalExcessNakedMargin(vault, ethPrice, timestamp)
+      console.log('put', excessMargin.toString(), isExcess)
+    })
+
+    it('get historical excess margin for call', async () => {
+      const timestamp = now - time.duration.hours(5).toNumber()
+      const vault = createVault(
+        eth250Call.address,
+        undefined,
+        weth.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(1, wethDecimals),
+      )
+      const [excessMargin, isExcess] = await calculator.getHistoricalExcessNakedMargin(vault, ethPrice, timestamp)
+      console.log('call', excessMargin.toString(), isExcess)
+    })
+  })
+
+  describe('getLiquidationFactor', async () => {
+    let now: number
+    let vault: vault
+    let roundId: number
+    let futureRoundId: number
+    let futureTimestamp: number
+    let historicalTimestamp: number
+    let ethPrice: BigNumber
+
+    before('set historical price', async () => {
+      vault = createVault(
+        eth250Put.address,
+        undefined,
+        weth.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(100, wethDecimals),
+      )
+
+      roundId = 100
+      futureRoundId = 300
+
+      ethPrice = new BigNumber('1000e8')
+
+      now = (await time.latest()).toNumber()
+      futureTimestamp = now + time.duration.days(1).toNumber()
+      historicalTimestamp = now - time.duration.days(5).toNumber()
+      await oracle.setHistoricalPrice(weth.address, roundId, ethPrice, historicalTimestamp)
+      await oracle.setHistoricalPrice(weth.address, futureRoundId, ethPrice, futureTimestamp)
+    })
+
+    it('should revert if there is no short token', async () => {
+      const emptyVault = createVault(
+        undefined,
+        undefined,
+        weth.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(100, wethDecimals),
+      )
+      const lastCheckedMargin = now - time.duration.days(1).toNumber()
+      await expectRevert(
+        calculator.getLiquidationFactor(emptyVault, futureRoundId, lastCheckedMargin),
+        'MarginCalculator: Vault has no short token',
+      )
+    })
+    // not sure if this could ever be possible
+    it('should revert if startTime is in the future', async () => {
+      const lastCheckedMargin = now + time.duration.days(1).toNumber()
+      await expectRevert(
+        calculator.getLiquidationFactor(vault, futureRoundId, lastCheckedMargin),
+        'MarginCalculator: invalid startTime',
+      )
+    })
+
+    it('should revert if lastCheckedMargin is after the start time', async () => {
+      const lastCheckedMargin = now + time.duration.days(1).toNumber()
+      await expectRevert(
+        calculator.getLiquidationFactor(vault, roundId, lastCheckedMargin),
+        'MarginCalculator: vault was adjusted more recently than the timestamp of the historical price',
+      )
+    })
+
+    it('should revert if the short otoken has expired', async () => {
+      const expiredVault = createVault(
+        expiredPut.address,
+        undefined,
+        weth.address,
+        scaleNum(1),
+        undefined,
+        createTokenAmount(100, wethDecimals),
+      )
+
+      const lastCheckedMargin = now - time.duration.days(30).toNumber()
+      await expectRevert(
+        calculator.getLiquidationFactor(expiredVault, roundId, lastCheckedMargin),
+        'MarginCalculator: short otoken has already expired',
+      )
     })
   })
 })

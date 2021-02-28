@@ -16,7 +16,6 @@ contract MockOracle {
     using SafeMath for uint256;
 
     mapping(address => uint256) public realTimePrice;
-    mapping(address => mapping(uint256 => uint256)) public historicalPrice;
     mapping(address => mapping(uint256 => uint256)) public storedPrice;
     mapping(address => uint256) internal stablePrice;
     mapping(address => mapping(uint256 => bool)) public isFinalized;
@@ -137,15 +136,20 @@ contract MockOracle {
         stablePrice[_asset] = _price;
     }
 
-    function getHistoricalPrice(address _asset, uint256 _roundId) external returns (uint256) {
-        return historicalPrice[_asset][_roundId];
+    mapping(address => mapping(uint256 => uint256)) public historicalPrice;
+    mapping(address => mapping(uint256 => uint256)) public historicalPriceTimestamp;
+
+    function getHistoricalPrice(address _asset, uint256 _roundId) external returns (uint256, uint256) {
+        return (historicalPrice[_asset][_roundId], historicalPriceTimestamp[_asset][_roundId]);
     }
 
     function setHistoricalPrice(
         address _asset,
         uint256 _roundId,
-        uint256 _price
+        uint256 _price,
+        uint256 _timestamp
     ) external {
         historicalPrice[_asset][_roundId] = _price;
+        historicalPriceTimestamp[_asset][_roundId] = _timestamp;
     }
 }

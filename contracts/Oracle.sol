@@ -298,10 +298,20 @@ contract Oracle is Ownable {
         emit ExpiryPriceUpdated(_asset, _expiryTimestamp, _price, now);
     }
 
-    function getHistoricalPrice(address _asset, uint256 roundId) external view returns (uint256, uint256) {
+    /**
+     * @notice submits the expiry price to the oracle, can only be set from the pricer
+     * @dev asset price can only be set after the locking period is over and before the dispute period has started
+     * @param _asset asset address
+     * @param _roundId expiry timestamp
+     * @return historical price
+     * @return timestamp
+     */
+    function getHistoricalPrice(address _asset, uint256 _roundId) external view returns (uint256, uint256) {
         require(assetPricer[_asset] != address(0), "Oracle: Pricer for this asset not set");
 
-        (uint256 price, uint256 timestamp) = HistoricalPricerInterface(assetPricer[_asset]).getHistoricalPrice(roundId);
+        (uint256 price, uint256 timestamp) = HistoricalPricerInterface(assetPricer[_asset]).getHistoricalPrice(
+            _roundId
+        );
 
         return (price, timestamp);
     }

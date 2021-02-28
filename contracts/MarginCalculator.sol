@@ -619,24 +619,32 @@ contract MarginCalculator {
     }
 
     // gets the margin requirements given a historical roundId
-    function getHistoricalExcessNakedMargin(MarginVault.Vault memory vault, uint256 historicalPrice)
-        public
-        view
-        returns (uint256, bool)
-    {
-        VaultDetails memory vaultDetails = getVaultDetails(vault);
-        require(vaultDetails.hasShort, "Vault has no short token.");
+    function getHistoricalExcessNakedMargin(
+        MarginVault.Vault memory _vault,
+        uint256 _price,
+        uint256 _timestamp
+    ) public view returns (uint256, bool) {
+        VaultDetails memory vaultDetails = getVaultDetails(_vault);
 
-        uint256 shortAmount = vault.shortAmounts[0];
-        uint256 collateralAmount = vault.collateralAmounts[0];
+        require(vaultDetails.hasShort, "MarginCalculator: Vault has no short token");
+        require(
+            vaultDetails.shortExpiryTimestamp > _timestamp,
+            "MarginCalculator: short token was expired at the timestamp"
+        );
+        _checkIsValidVault(_vault, vaultDetails);
+
+        uint256 shortAmount = _vault.shortAmounts[0];
+        uint256 collateralAmount = _vault.collateralAmounts[0];
         uint256 collateralRequiredPerOtoken = getNakedMarginRequirements(
             vaultDetails.shortStrikePrice,
-            historicalPrice,
-            vaultDetails.shortExpiryTimestamp,
+            _price,
+            vaultDetails.shortExpiryTimestamp.sub(_timestamp),
             vaultDetails.isShortPut,
             vaultDetails.shortCollateralDecimals
         );
-        uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(BASE);
+
+        uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(10**BASE);
+        return (collateralAmount, false);
         if (collateralAmount > collateralRequired) {
             return (collateralAmount.sub(collateralRequired), true);
         } else {
@@ -660,13 +668,14 @@ contract MarginCalculator {
         uint256 collateralDecimals
     ) public view returns (uint256) {
         if (isPut) {
-            // if isPut return value will have strike decimals
+            // if isPut return value will have collateral decimals
             if (strike < spot.mul(3).div(4)) {
                 // p(t) * K
-                return _p(timeToExpiry).mul(strike).div(10**12);
+                return _p(timeToExpiry).mul(strike).mul(10**collateralDecimals).div(10**BASE).div(10**12);
             } else {
                 // p(t) * (.75 * S) + (K - .75 * S)
-                return _p(timeToExpiry).mul(3).mul(spot).div(4).div(10**12).add(strike.sub(spot.mul(3).div(4)));
+                uint256 A = _p(timeToExpiry).mul(3).mul(spot).div(4).div(10**12).add(strike.sub(spot.mul(3).div(4)));
+                return A.mul(10**collateralDecimals).div(10**BASE);
             }
         } else {
             // if (!isPut) return value will have collateral decimals
@@ -712,18 +721,19 @@ contract MarginCalculator {
         uint256 lastCheckedMargin
     ) external view returns (uint256) {
         VaultDetails memory vaultDetails = getVaultDetails(vault);
+        require(vaultDetails.hasShort, "MarginCalculator: Vault has no short token");
         (uint256 price, uint256 startTime) = oracle.getHistoricalPrice(vaultDetails.shortUnderlyingAsset, roundId);
 
-        require(startTime < now, "invalid startTime");
+        require(startTime < now, "MarginCalculator: invalid startTime");
         require(
             startTime > lastCheckedMargin,
-            "vault was adjusted more recently than the timestamp of the historical price."
+            "MarginCalculator: vault was adjusted more recently than the timestamp of the historical price"
         );
-        require(now < vaultDetails.shortExpiryTimestamp, "short otoken has already expired.");
+        require(now < vaultDetails.shortExpiryTimestamp, "MarginCalculator: short otoken has already expired");
 
         bool isExcess;
-        (, isExcess) = getHistoricalExcessNakedMargin(vault, price);
-        require(!isExcess, "vault was not under-collateralized at the roundId.");
+        (, isExcess) = getHistoricalExcessNakedMargin(vault, price, startTime);
+        require(!isExcess, "MarginCalculator: vault was not under-collateralized at the roundId");
         uint256 timeElapsed = now.sub(startTime);
         // watch decimals
         uint256 B = vault.collateralAmounts[0].mul(BASE).div(vault.shortAmounts[0]).div(
