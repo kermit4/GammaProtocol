@@ -35,6 +35,8 @@ contract Oracle is Ownable {
     mapping(address => mapping(uint256 => Price)) internal storedPrice;
     /// @dev mapping between stable asset and price
     mapping(address => uint256) internal stablePrice;
+    /// @dev mapping between collateral asset and dustLimit
+    mapping(address => uint256) internal dustLimit;
     //// @dev disputer is a role defined by the owner that has the ability to dispute a price during the dispute period
     address internal disputer;
 
@@ -299,12 +301,11 @@ contract Oracle is Ownable {
     }
 
     /**
-     * @notice submits the expiry price to the oracle, can only be set from the pricer
-     * @dev asset price can only be set after the locking period is over and before the dispute period has started
+     * @notice fetches the historical round data from the oracle
      * @param _asset asset address
-     * @param _roundId expiry timestamp
-     * @return historical price
-     * @return timestamp
+     * @param _roundId chainlink roundId
+     * @return round price
+     * @return round timestamp
      */
     function getHistoricalPrice(address _asset, uint256 _roundId) external view returns (uint256, uint256) {
         require(assetPricer[_asset] != address(0), "Oracle: Pricer for this asset not set");
@@ -314,5 +315,13 @@ contract Oracle is Ownable {
         );
 
         return (price, timestamp);
+    }
+
+    function setDustLimit(address _asset, uint256 _dustLimit) external onlyOwner {
+        dustLimit[_asset] = _dustLimit;
+    }
+
+    function getDustLimit(address _asset) external view returns (uint256) {
+        return dustLimit[_asset];
     }
 }

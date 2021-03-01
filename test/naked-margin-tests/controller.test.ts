@@ -254,7 +254,7 @@ contract(
         await controllerProxy.operate(actionArgs, {from: accountOwner1})
       })
 
-      it('should not mint tokens in an empty vault', async () => {
+      it('should not mint tokens in a vault with no collateral', async () => {
         const amountToMint = createTokenAmount(1)
         const actionArgs = [
           {
@@ -268,6 +268,7 @@ contract(
             data: ZERO_ADDR,
           },
         ]
+        await oracle.setRealTimePrice(weth.address, new BigNumber('1000e8'))
         await expectRevert(
           controllerProxy.operate(actionArgs, {from: accountOwner1}),
           'Controller: invalid final vault state',

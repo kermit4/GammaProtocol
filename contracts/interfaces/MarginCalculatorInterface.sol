@@ -17,9 +17,9 @@ interface MarginCalculatorInterface {
 
     function getExcessNakedMargin(MarginVault.Vault memory vault) external view returns (uint256, bool);
 
-    function getLiquidationFactor(
-        MarginVault.Vault memory vault,
-        uint256 roundId,
-        uint256 lastCheckedMargin
-    ) external view returns (uint256);
+    function getLiquidationAmount(
+        MarginVault.Vault memory _vault,
+        uint256 _roundId,
+        uint256 _lastCheckedMargin
+    ) external view returns (uint256 liquidationAmount);
 }

@@ -18,6 +18,7 @@ contract MockOracle {
     mapping(address => uint256) public realTimePrice;
     mapping(address => mapping(uint256 => uint256)) public storedPrice;
     mapping(address => uint256) internal stablePrice;
+    mapping(address => uint256) internal dustLimit;
     mapping(address => mapping(uint256 => bool)) public isFinalized;
 
     mapping(address => uint256) internal pricerLockingPeriod;
@@ -151,5 +152,13 @@ contract MockOracle {
     ) external {
         historicalPrice[_asset][_roundId] = _price;
         historicalPriceTimestamp[_asset][_roundId] = _timestamp;
+    }
+
+    function setDustLimit(address _asset, uint256 _dustLimit) external {
+        dustLimit[_asset] = _dustLimit;
+    }
+
+    function getDustLimit(address _asset) external view returns (uint256) {
+        return dustLimit[_asset];
     }
 }

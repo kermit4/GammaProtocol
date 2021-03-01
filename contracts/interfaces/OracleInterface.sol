@@ -41,4 +41,8 @@ interface OracleInterface {
     function setDisputer(address _disputer) external;
 
     function getHistoricalPrice(address _asset, uint256 roundId) external view returns (uint256, uint256);
+
+    function setDustLimit(address _asset, uint256 _dustLimit) external;
+
+    function getDustLimit(address _asset) external view returns (uint256);
 }

@@ -853,41 +853,35 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
         pool = MarginPoolInterface(addressbook.getMarginPool());
     }
 
-    // liquidations
-    //
-
     // lastCheckedMargin[user][vaultId] == 0 if maxLoss
     // lastCheckedMargin[user][vaultId] > 0 if the user is partially collateralized,
     // in which case the value is the last time the vault was verified to be safe
     mapping(address => mapping(uint256 => uint256)) internal lastCheckedMargin;
     mapping(address => mapping(uint256 => uint256)) internal marginType;
 
-    // ?
-    // function isVaultUnsafe(address user, uint256 vaultId) public view returns (bool) {
-    //     MarginVault.Vault memory vault = getVault(user, vaultId);
-    //     oracle.getPrice(_asset);
-    //     bool isVaultPartiallyCollateralized =
-    //     calculator.getPartialCollateralizationAmount
-    // }
-    // // liquidate
-    // function liquidate(address owner, uint256 vaultId, uint256 to, uint256 amount, uint256 roundId) public {
-
-    // }
-
     function _liquidate(Actions.LiquidateArgs memory _args) internal notPartiallyPaused {
         require(marginType[_args.owner][_args.vaultId] == 1, "vault is not naked margin.");
         MarginVault.Vault memory vault = getVault(_args.owner, _args.vaultId);
-        uint256 liquidationFactor = calculator.getLiquidationFactor(
+        uint256 liquidationAmount = calculator.getLiquidationAmount(
             vault,
             _args.roundId,
             lastCheckedMargin[_args.owner][_args.vaultId]
         );
-        uint256 collateralAmount = _args.amount.mul(liquidationFactor).div(10**8);
-        // we can burn from the controller :)
+
+        address collateralAsset = vault.collateralAssets[0];
+        uint256 dustLimit = oracle.getDustLimit(collateralAsset);
+        require(
+            _args.amount == vault.shortAmounts[0] || vault.collateralAmounts[0].sub(liquidationAmount) > dustLimit,
+            "Controller: partial liquidations must leave behind more than the dust limit"
+        );
+
+        // destroy the tokens
         OtokenInterface otoken = OtokenInterface(vault.shortOtokens[0]);
+        vaults[_args.owner][_args.vaultId].removeShort(vault.shortOtokens[0], _args.amount, 0);
         otoken.burnOtoken(_args.from, _args.amount);
-        // need collateral asset
-        address asset = vault.collateralAssets[0];
-        pool.transferToUser(asset, _args.to, collateralAmount);
+
+        // transfer collateral to liquidator
+        vaults[_args.owner][_args.vaultId].removeCollateral(collateralAsset, liquidationAmount, 0);
+        pool.transferToUser(collateralAsset, _args.to, liquidationAmount);
     }
 }

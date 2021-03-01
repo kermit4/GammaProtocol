@@ -562,14 +562,14 @@ contract MarginCalculator {
 
     /**
      * @notice convert an amount of otoken to current amount of collateral, based on historical price
-     * @param vault, the vault to be checked
+     * @param _vault, the vault to be checked
      * @return amount of excess margin
      */
-    function getExcessNakedMargin(MarginVault.Vault memory vault) external view returns (uint256, bool) {
-        VaultDetails memory vaultDetails = getVaultDetails(vault);
-
+    function getExcessNakedMargin(MarginVault.Vault memory _vault) external view returns (uint256, bool) {
+        VaultDetails memory vaultDetails = getVaultDetails(_vault);
+        _checkIsValidVault(_vault, vaultDetails);
         if (!vaultDetails.hasShort) {
-            if (vaultDetails.hasCollateral) return (vault.collateralAmounts[0], true);
+            if (vaultDetails.hasCollateral) return (_vault.collateralAmounts[0], true);
             return (0, true);
         }
 
@@ -578,7 +578,7 @@ contract MarginCalculator {
 
         if (expired) {
             FPI.FixedPointInt memory collateralAmount = FPI.fromScaledUint(
-                vault.collateralAmounts[0],
+                _vault.collateralAmounts[0],
                 vaultDetails.collateralDecimals
             );
             FPI.FixedPointInt memory shortCashValue = _getExpiredCashValue(
@@ -599,17 +599,17 @@ contract MarginCalculator {
             return (excessCollateralExternal, isExcess);
         } else {
             // get current price
-            uint256 collateralAmount = vault.collateralAmounts[0];
+            uint256 collateralAmount = vaultDetails.hasCollateral ? _vault.collateralAmounts[0] : 0;
             uint256 currentPrice = oracle.getPrice(vaultDetails.shortUnderlyingAsset);
-            uint256 shortAmount = vault.shortAmounts[0];
+            uint256 shortAmount = _vault.shortAmounts[0];
             uint256 collateralRequiredPerOtoken = getNakedMarginRequirements(
                 vaultDetails.shortStrikePrice,
                 currentPrice,
-                otokenExpiry,
+                otokenExpiry.sub(now),
                 vaultDetails.isShortPut,
                 vaultDetails.shortCollateralDecimals
             );
-            uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(10**8);
+            uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(10**BASE);
             if (collateralAmount > collateralRequired) {
                 return (collateralAmount.sub(collateralRequired), true);
             } else {
@@ -644,7 +644,6 @@ contract MarginCalculator {
         );
 
         uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(10**BASE);
-        return (collateralAmount, false);
         if (collateralAmount > collateralRequired) {
             return (collateralAmount.sub(collateralRequired), true);
         } else {
@@ -710,62 +709,58 @@ contract MarginCalculator {
     //  * @param _vault, the vault to be liquidated
     //  * @param roundId  the historical chainlink roundId
     //  * @param amount the amount of otoken debt to offer.
-    //  * @return amount of collateral the liquidator receives
+    //  * @return the amount of collateral the liquidator receives for a single otoken
     //  */
     uint256 internal deviationFactor = 1;
     uint256 internal deviationDecimals = 2;
 
-    function getLiquidationFactor(
-        MarginVault.Vault memory vault,
-        uint256 roundId,
-        uint256 lastCheckedMargin
+    function getLiquidationAmount(
+        MarginVault.Vault memory _vault,
+        uint256 _roundId,
+        uint256 _lastCheckedMargin
     ) external view returns (uint256) {
-        VaultDetails memory vaultDetails = getVaultDetails(vault);
+        VaultDetails memory vaultDetails = getVaultDetails(_vault);
         require(vaultDetails.hasShort, "MarginCalculator: Vault has no short token");
-        (uint256 price, uint256 startTime) = oracle.getHistoricalPrice(vaultDetails.shortUnderlyingAsset, roundId);
+        (uint256 price, uint256 startTime) = oracle.getHistoricalPrice(vaultDetails.shortUnderlyingAsset, _roundId);
 
         require(startTime < now, "MarginCalculator: invalid startTime");
         require(
-            startTime > lastCheckedMargin,
+            startTime > _lastCheckedMargin,
             "MarginCalculator: vault was adjusted more recently than the timestamp of the historical price"
         );
         require(now < vaultDetails.shortExpiryTimestamp, "MarginCalculator: short otoken has already expired");
 
         bool isExcess;
-        (, isExcess) = getHistoricalExcessNakedMargin(vault, price, startTime);
+        (, isExcess) = getHistoricalExcessNakedMargin(_vault, price, startTime);
         require(!isExcess, "MarginCalculator: vault was not under-collateralized at the roundId");
         uint256 timeElapsed = now.sub(startTime);
         // watch decimals
-        uint256 B = vault.collateralAmounts[0].mul(BASE).div(vault.shortAmounts[0]).div(
-            10**vaultDetails.shortCollateralDecimals
-        );
+        uint256 B = _vault.collateralAmounts[0].mul(10**BASE).div(_vault.shortAmounts[0]);
+
         if (timeElapsed > AUCTION_LENGTH) return B;
 
         // deviation = D*S
-        uint256 deviation = deviationFactor.mul(price).div(10**deviationDecimals);
-        uint256 A;
 
-        uint256 strike = vaultDetails.shortStrikePrice;
+        uint256 A;
         // determine cash value
         {
+            uint256 deviation = deviationFactor.mul(price).div(10**deviationDecimals);
+            uint256 strike = vaultDetails.shortStrikePrice;
             if (vaultDetails.isShortPut) {
-                // put
-                if (vaultDetails.shortStrikePrice > price) {
-                    if (strike <= price + deviation)
-                        A = 0;
-                        // CV - D*S
-                    else A = strike.sub(price).sub(deviation);
-                } else {
-                    // call
-                    if (strike <= price + deviation) A = 0;
-                    else A = strike.sub(price).sub(deviation).div(price).mul(BASE);
-                }
+                // put, usdc
+                if (strike <= price + deviation)
+                    A = 0;
+                    // CV - D*S
+                else A = strike.sub(price).sub(deviation).mul(10**vaultDetails.collateralDecimals).div(10**BASE);
+            } else {
+                // call
+                if (strike <= price + deviation)
+                    A = 0;
+                    // (CV - D*S)/S
+                else A = strike.sub(price).sub(deviation).mul(10**vaultDetails.collateralDecimals).div(price);
             }
         }
 
-        // check formula.
-        // what are the decimals of the liquidation factor ? same as collateral ?
-        // or fixed to BASE ?
-        return A.add(timeElapsed.div(AUCTION_LENGTH).mul(B.sub(A)));
+        return A.add(timeElapsed.mul(B.sub(A)).div(AUCTION_LENGTH));
     }
 }
