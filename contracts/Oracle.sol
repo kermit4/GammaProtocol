@@ -322,6 +322,8 @@ contract Oracle is Ownable {
     }
 
     function getDustLimit(address _asset) external view returns (uint256) {
-        return dustLimit[_asset];
+        uint256 assetDustLimit = dustLimit[_asset];
+        require(assetDustLimit > 0, "Oracle: Dust limit for this asset not set");
+        return assetDustLimit;
     }
 }

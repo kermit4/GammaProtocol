@@ -42,6 +42,7 @@ enum ActionType {
   Redeem,
   Call,
   InvalidAction,
+  Liquidate,
 }
 
 contract(
@@ -67,6 +68,7 @@ contract(
 
     const usdcDecimals = 6
     const wethDecimals = 18
+    let vaultCounter = 1
 
     before('Deployment', async () => {
       // addressbook deployment
@@ -122,7 +124,7 @@ contract(
             owner: accountOwner1,
             secondAddress: ZERO_ADDR,
             asset: ZERO_ADDR,
-            vaultId: '1',
+            vaultId: vaultCounter.toString(),
             amount: '0',
             // naked margin
             index: '1',
@@ -143,7 +145,7 @@ contract(
             owner: accountOwner1,
             secondAddress: accountOwner1,
             asset: usdc.address,
-            vaultId: '1',
+            vaultId: vaultCounter.toString(),
             amount: collateralToDeposit,
             index: '0',
             data: ZERO_ADDR,
@@ -156,26 +158,28 @@ contract(
         )
       })
 
-      it('should deposit collateral', async () => {
-        // whitelist collateral
-        await whitelist.whitelistCollateral(usdc.address)
-
-        const collateralToDeposit = createTokenAmount(100, usdcDecimals)
+      it('should revert if collateral is not above the DUST limit', async () => {
+        const collateralToDeposit = createTokenAmount(1, usdcDecimals)
         const actionArgs = [
           {
             actionType: ActionType.DepositCollateral,
             owner: accountOwner1,
             secondAddress: accountOwner1,
             asset: usdc.address,
-            vaultId: '1',
+            vaultId: vaultCounter.toString(),
             amount: collateralToDeposit,
             index: '0',
             data: ZERO_ADDR,
           },
         ]
 
+        await whitelist.whitelistCollateral(usdc.address)
+        await oracle.setDustLimit(usdc.address, createTokenAmount(100, usdcDecimals))
         await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
-        await controllerProxy.operate(actionArgs, {from: accountOwner1})
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner1}),
+          'Controller: naked margin vault must have at least the dust limit of collateral',
+        )
       })
 
       it('should not be allowed to use long as collateral', async () => {
@@ -203,7 +207,7 @@ contract(
             owner: accountOwner1,
             secondAddress: accountOwner1,
             asset: longOtoken.address,
-            vaultId: '1',
+            vaultId: vaultCounter.toString(),
             amount: longToDeposit,
             index: '0',
             data: ZERO_ADDR,
@@ -214,6 +218,29 @@ contract(
           controllerProxy.operate(actionArgs, {from: accountOwner1}),
           'Controller: Long otokens not allowed in this vault',
         )
+      })
+
+      it('should allow deposit of white-listed collateral above the DUST limit', async () => {
+        const collateralToDeposit = createTokenAmount(2, usdcDecimals)
+        const actionArgs = [
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await oracle.setDustLimit(usdc.address, createTokenAmount(1, usdcDecimals))
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await controllerProxy.operate(actionArgs, {from: accountOwner1})
+        const vault = await controllerProxy.getVault(accountOwner1, vaultCounter.toString())
+        assert.equal(vault.collateralAssets[0].toString(), usdc.address)
+        assert.equal(vault.collateralAmounts[0].toString(), collateralToDeposit.toString())
       })
     })
 
@@ -237,6 +264,8 @@ contract(
         // whitelist the token
         await whitelist.whitelistOtoken(shortOtoken.address)
         // open a new naked margin vault
+        // increment the vault counter
+        vaultCounter += 1
         const actionArgs = [
           {
             actionType: ActionType.OpenVault,
@@ -244,7 +273,7 @@ contract(
             secondAddress: ZERO_ADDR,
             asset: ZERO_ADDR,
             // vault 2
-            vaultId: '2',
+            vaultId: vaultCounter.toString(),
             amount: '0',
             // not naked margin
             index: '1',
@@ -262,7 +291,7 @@ contract(
             owner: accountOwner1,
             secondAddress: accountOwner1,
             asset: shortOtoken.address,
-            vaultId: '2',
+            vaultId: vaultCounter.toString(),
             amount: amountToMint,
             index: '0',
             data: ZERO_ADDR,
@@ -285,7 +314,7 @@ contract(
             owner: accountOwner1,
             secondAddress: accountOwner1,
             asset: usdc.address,
-            vaultId: '2',
+            vaultId: vaultCounter.toString(),
             amount: collateralToDeposit,
             index: '0',
             data: ZERO_ADDR,
@@ -295,7 +324,7 @@ contract(
             owner: accountOwner1,
             secondAddress: accountOwner1,
             asset: shortOtoken.address,
-            vaultId: '2',
+            vaultId: vaultCounter.toString(),
             amount: amountToMint,
             index: '0',
             data: ZERO_ADDR,
@@ -306,13 +335,132 @@ contract(
         await controllerProxy.operate(actionArgs, {from: accountOwner1})
         assert.equal((await shortOtoken.balanceOf(accountOwner1)).toString(), amountToMint)
       })
+
+      it('should revert if not enough collateral', async () => {
+        const collateralToDeposit = createTokenAmount(1, usdcDecimals)
+        const amountToMint = createTokenAmount(10)
+
+        const actionArgs = [
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.MintShortOption,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: shortOtoken.address,
+            vaultId: vaultCounter.toString(),
+            amount: amountToMint,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner1}),
+          'Controller: invalid final vault state',
+        )
+      })
+    })
+
+    describe('_liquidate', async () => {
+      let shortOtoken: MockOtokenInstance
+      let now: BigNumber
+      before(async () => {
+        vaultCounter += 1
+        const expiryTime = new BigNumber(60 * 60 * 24) // after 1 day
+        shortOtoken = await MockOtoken.new()
+        now = new BigNumber(await time.latest())
+        // initialize new short otoken
+        // weth put with usdc collateral
+        await shortOtoken.init(
+          addressBook.address,
+          weth.address,
+          usdc.address,
+          usdc.address,
+          createTokenAmount(200),
+          now.plus(expiryTime),
+          true,
+        )
+        const amountToMint = createTokenAmount(1)
+        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
+        await shortOtoken.approve(marginPool.address, amountToMint, {from: accountOwner2})
+        // accountOwner1 deposits collateral and mints short tokens
+        const collateralToDeposit = createTokenAmount(100, usdcDecimals)
+
+        const actionArgs = [
+          {
+            actionType: ActionType.OpenVault,
+            owner: accountOwner1,
+            secondAddress: ZERO_ADDR,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '0',
+            // naked margin
+            index: '1',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.MintShortOption,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: shortOtoken.address,
+            vaultId: vaultCounter.toString(),
+            amount: amountToMint,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await oracle.setRealTimePrice(weth.address, new BigNumber('1000e8'))
+        await whitelist.whitelistOtoken(shortOtoken.address)
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await controllerProxy.operate(actionArgs, {from: accountOwner1})
+      })
+
+      it('should not revert', async () => {
+        const roundId = 15
+        await time.increase(time.duration.hours(12))
+        // set historical price for one minute after the minting
+        await oracle.setHistoricalPrice(weth.address, roundId, new BigNumber('1e8'), now.plus(60))
+
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: ZERO_ADDR,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '0',
+            // roundId
+            index: roundId.toString(),
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await controllerProxy.operate(actionArgs, {from: accountOwner2})
+        assert.equal(5, 5)
+      })
     })
   },
 )
-
-// it('should revert if not enough collateral', async () => {})
-
-// it('should revert if collateral is not above the DUST limit', async () => {})
 
 // it('should not be liquidatable if short otoken is expired')
 

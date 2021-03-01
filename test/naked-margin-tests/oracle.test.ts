@@ -67,4 +67,21 @@ contract('Oracle', ([owner, disputer, random, collateral, strike]) => {
       assert.equal(timestamp.toString(), now.toString())
     })
   })
+
+  describe('dustLimit', () => {
+    it('should only allow owner to set the the dust limit', async () => {
+      await expectRevert(oracle.setDustLimit(weth.address, 100, {from: random}), 'Ownable: caller is not the owner')
+    })
+
+    it('should not get the dust limit for an unset asset', async () => {
+      await expectRevert(oracle.getDustLimit(usdc.address), 'Oracle: Dust limit for this asset not set')
+    })
+
+    it('should set/get the dust limit for WETH', async () => {
+      const expectedDustLimit = new BigNumber('.1e8')
+      await oracle.setDustLimit(weth.address, expectedDustLimit, {from: owner})
+      const wethDustLimit = await oracle.getDustLimit(weth.address)
+      assert.equal(wethDustLimit.toString(), expectedDustLimit.toString())
+    })
+  })
 })

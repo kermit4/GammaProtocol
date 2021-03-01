@@ -150,7 +150,6 @@ library Actions {
         // index of the vault to which is to be settled
         uint256 vaultId;
         address from;
-        // to: secondAddress
         address to;
         // otoken amount to burn
         uint256 amount;
@@ -297,17 +296,17 @@ library Actions {
         return CallArgs({callee: _args.secondAddress, data: _args.data});
     }
 
-    function _parseLiquidateArgs(ActionArgs memory _args) internal view returns (LiquidateArgs memory) {
+    function _parseLiquidateArgs(ActionArgs memory _args) internal pure returns (LiquidateArgs memory) {
         require(_args.actionType == ActionType.Liquidate, "Actions: can only parse arguments for liquidate actions");
 
         return
             LiquidateArgs({
                 owner: _args.owner,
                 vaultId: _args.vaultId,
+                from: _args.secondAddress,
                 to: _args.secondAddress,
                 amount: _args.amount,
-                roundId: _args.index,
-                from: msg.sender
+                roundId: _args.index
             });
     }
 }

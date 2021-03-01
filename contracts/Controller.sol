@@ -537,6 +537,13 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
         if (marginType[_owner][_vaultId] == 1) {
             (, bool isValidVault) = calculator.getExcessNakedMargin(_vault);
             require(isValidVault, "Controller: invalid final vault state");
+            if (_vault.collateralAmounts.length > 0) {
+                uint256 dustLimit = oracle.getDustLimit(_vault.collateralAssets[0]);
+                require(
+                    _vault.collateralAmounts[0] > dustLimit,
+                    "Controller: naked margin vault must have at least the dust limit of collateral"
+                );
+            }
         } else {
             (, bool isValidVault) = calculator.getExcessCollateral(_vault);
             require(isValidVault, "Controller: invalid final vault state");
