@@ -43,6 +43,8 @@ contract MarginCalculator {
         uint256 longExpiryTimestamp;
         uint256 longCollateralDecimals;
         uint256 collateralDecimals;
+        uint256 vaultType;
+        uint256 latestUpdateTimestamp;
         bool isShortPut;
         bool isLongPut;
         bool hasLong;
@@ -109,7 +111,7 @@ contract MarginCalculator {
      */
     function getExcessCollateral(MarginVault.Vault memory _vault) public view returns (uint256, bool) {
         // get vault details
-        VaultDetails memory vaultDetails = getVaultDetails(_vault);
+        VaultDetails memory vaultDetails = getVaultDetails(_vault, 1, 1);
         // include all the checks for to ensure the vault is valid
         _checkIsValidVault(_vault, vaultDetails);
 
@@ -474,7 +476,11 @@ contract MarginCalculator {
         return _assets.length > 0 && _assets[0] != address(0);
     }
 
-    function getVaultDetails(MarginVault.Vault memory _vault) internal view returns (VaultDetails memory) {
+    function getVaultDetails(
+        MarginVault.Vault memory _vault,
+        uint256 _vaultType,
+        uint256 _latestUpdateTimestamp
+    ) internal view returns (VaultDetails memory) {
         VaultDetails memory vaultDetails = VaultDetails(
             address(0),
             address(0),
@@ -482,6 +488,8 @@ contract MarginCalculator {
             address(0),
             address(0),
             address(0),
+            0,
+            0,
             0,
             0,
             0,
@@ -499,6 +507,8 @@ contract MarginCalculator {
         vaultDetails.hasLong = _isNotEmpty(_vault.longOtokens);
         vaultDetails.hasShort = _isNotEmpty(_vault.shortOtokens);
         vaultDetails.hasCollateral = _isNotEmpty(_vault.collateralAssets);
+        vaultDetails.vaultType = _vaultType;
+        vaultDetails.latestUpdateTimestamp = _latestUpdateTimestamp;
 
         if (vaultDetails.hasLong) {
             OtokenInterface long = OtokenInterface(_vault.longOtokens[0]);

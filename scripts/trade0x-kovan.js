@@ -145,6 +145,33 @@ async function runExport() {
     await controllerProxy.setOperator(payableProxyController.address, true, {from: taker})
   }
 
+  // const tradeCallData = web3.eth.abi.encodeParameters(
+  //   [
+  //     'address',
+  //     {
+  //       'Order[]': {
+  //         makerAddress: 'address',
+  //         takerAddress: 'address',
+  //         feeRecipientAddress: 'address',
+  //         senderAddress: 'address',
+  //         makerAssetAmount: 'uint256',
+  //         takerAssetAmount: 'uint256',
+  //         makerFee: 'uint256',
+  //         takerFee: 'uint256',
+  //         expirationTimeSeconds: 'uint256',
+  //         salt: 'uint256',
+  //         makerAssetData: 'bytes',
+  //         takerAssetData: 'bytes',
+  //         makerFeeAssetData: 'bytes',
+  //         takerFeeAssetData: 'bytes',
+  //       },
+  //     },
+  //     'uint256[]',
+  //     'bytes[]',
+  //   ],
+  //   [taker, [signedOrder], [optionsToMint], [signedOrder.signature]],
+  // )
+
   const tradeCallData = web3.eth.abi.encodeParameters(
     [
       'address',
@@ -169,8 +196,51 @@ async function runExport() {
       'uint256[]',
       'bytes[]',
     ],
-    [taker, [signedOrder], [optionsToMint], [signedOrder.signature]],
+    [taker, [], [], []],
   )
+
+  // const actionArgs = [
+  //   {
+  //     actionType: ActionType.OpenVault,
+  //     owner: taker,
+  //     secondAddress: ZERO_ADDR,
+  //     asset: ZERO_ADDR,
+  //     vaultId: vaultCounter.toString(),
+  //     amount: '0',
+  //     index: '0',
+  //     data: ZERO_ADDR,
+  //   },
+  //   {
+  //     actionType: ActionType.MintShortOption,
+  //     owner: taker,
+  //     secondAddress: taker,
+  //     asset: callOption1.address,
+  //     vaultId: vaultCounter.toString(),
+  //     amount: optionsToMint,
+  //     index: '0',
+  //     data: ZERO_ADDR,
+  //   },
+  //   {
+  //     actionType: ActionType.Call,
+  //     owner: taker,
+  //     secondAddress: trade0xCallee.address,
+  //     asset: ZERO_ADDR,
+  //     vaultId: vaultCounter.toString(),
+  //     amount: '0',
+  //     index: '0',
+  //     data: tradeCallData,
+  //   },
+  //   {
+  //     actionType: ActionType.DepositCollateral,
+  //     owner: taker,
+  //     secondAddress: payableProxyController.address,
+  //     asset: weth.address,
+  //     vaultId: vaultCounter.toString(),
+  //     amount: collateralToDeposit,
+  //     index: '0',
+  //     data: ZERO_ADDR,
+  //   },
+  // ]
 
   const actionArgs = [
     {
@@ -206,7 +276,7 @@ async function runExport() {
     {
       actionType: ActionType.DepositCollateral,
       owner: taker,
-      secondAddress: payableProxyController.address,
+      secondAddress: taker,
       asset: weth.address,
       vaultId: vaultCounter.toString(),
       amount: collateralToDeposit,
@@ -238,28 +308,48 @@ async function runExport() {
   console.log("Taker Otoken balance before: 📊", user1Call1BalanceBefore.toString())
   console.log("Otoken total supply before: 📊", oTokenSupplyBefore.toString())
 
-  console.log("Approving 0x Callee and calling Operate 🚀")
+  console.log("Approving 0x Callee to trade option and calling Operate 🚀")
 
   await callOption1.approve(trade0xCallee.address, optionsToMint, {from: taker})
-  await payableProxyController.operate(actionArgs, taker, {
-    from: taker,
-    gasPrice: gasPriceWei,
-    value: operateValue,
-  })
+  // await payableProxyController.operate(actionArgs, taker, {
+  //   from: taker,
+  //   gasPrice: gasPriceWei,
+  //   value: operateValue,
+  // })
 
-  const user1UsdcBalanceAfter = new BigNumber(await usdc.balanceOf(taker))
-  const marginPoolWethBalanceAfter = new BigNumber(await weth.balanceOf(marginPool.address))
-  const user1Call1BalanceAfter = new BigNumber(await callOption1.balanceOf(taker))
-  const oTokenSupplyAfter = new BigNumber(await callOption1.totalSupply())
-  const makerUsdcBalanceAfter = new BigNumber(await usdc.balanceOf(maker))
-  const makerCall1BalanceAfter = new BigNumber(await callOption1.balanceOf(taker))
+  console.log("Minting some WETH from ETH 🚀")
 
-  console.log("MarginPool WETH balance after: 📈", marginPoolWethBalanceAfter.toString())
-  console.log("Maker USDC balance after: 📉", makerUsdcBalanceAfter.toString())
-  console.log("Maker Otoken balance after: 📈 ", makerCall1BalanceAfter.toString())
-  console.log("Taker USDC balance after: 📈", user1UsdcBalanceAfter.toString())
-  console.log("Taker Otoken balance after: 📊", user1Call1BalanceAfter.toString())
-  console.log("Otoken total supply after: 📈", oTokenSupplyAfter.toString())
+  await weth.deposit({from: taker, value: operateValue})
+
+  console.log("Approving 0x callee to trade WETH 🚀")
+
+  await weth.approve(trade0xCallee.address, operateValue, {from: taker})
+
+  console.log("Approving controller to trade WETH 🚀")
+
+  await weth.approve(controllerProxy.address, operateValue, {from: taker})
+
+  console.log("Approving margin pool to trade WETH 🚀")
+
+  await weth.approve(marginPool.address, operateValue, {from: taker})
+
+  console.log("Calling operate now 🚀")
+
+  await controllerProxy.operate(actionArgs, {from:taker, gasPrice: gasPriceWei})  
+
+  // const user1UsdcBalanceAfter = new BigNumber(await usdc.balanceOf(taker))
+  // const marginPoolWethBalanceAfter = new BigNumber(await weth.balanceOf(marginPool.address))
+  // const user1Call1BalanceAfter = new BigNumber(await callOption1.balanceOf(taker))
+  // const oTokenSupplyAfter = new BigNumber(await callOption1.totalSupply())
+  // const makerUsdcBalanceAfter = new BigNumber(await usdc.balanceOf(maker))
+  // const makerCall1BalanceAfter = new BigNumber(await callOption1.balanceOf(taker))
+
+  // console.log("MarginPool WETH balance after: 📈", marginPoolWethBalanceAfter.toString())
+  // console.log("Maker USDC balance after: 📉", makerUsdcBalanceAfter.toString())
+  // console.log("Maker Otoken balance after: 📈 ", makerCall1BalanceAfter.toString())
+  // console.log("Taker USDC balance after: 📈", user1UsdcBalanceAfter.toString())
+  // console.log("Taker Otoken balance after: 📊", user1Call1BalanceAfter.toString())
+  // console.log("Otoken total supply after: 📈", oTokenSupplyAfter.toString())
 }
 
 run = async function(callback) {
