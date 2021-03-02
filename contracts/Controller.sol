@@ -386,13 +386,10 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
      */
     function getProceed(address _owner, uint256 _vaultId) external view returns (uint256) {
         MarginVault.Vault memory vault = getVault(_owner, _vaultId);
-        uint256 netValue;
-        if (marginType[_owner][_vaultId] == 1) {
-            bool isExcess;
-            (netValue, isExcess) = calculator.getExcessNakedMargin(vault);
-            if (!isExcess) netValue = 0;
-        } else (netValue, ) = calculator.getExcessCollateral(vault);
-        return netValue;
+        // if !isExcess, then proceed was negative !
+        (uint256 proceed, bool isExcess) = calculator.getExcessCollateral(vault, marginType[_owner][_vaultId]);
+        if (!isExcess) return 0;
+        return proceed;
     }
 
     /**
@@ -532,22 +529,14 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
      * @param _vaultId vault id of the final vault
      */
     function _verifyFinalState(address _owner, uint256 _vaultId) internal view {
-        MarginVault.Vault memory _vault = getVault(_owner, _vaultId);
-
-        if (marginType[_owner][_vaultId] == 1) {
-            (, bool isValidVault) = calculator.getExcessNakedMargin(_vault);
-            require(isValidVault, "Controller: invalid final vault state");
-            if (_vault.collateralAmounts.length > 0) {
-                uint256 dustLimit = oracle.getDustLimit(_vault.collateralAssets[0]);
-                require(
-                    _vault.collateralAmounts[0] > dustLimit,
-                    "Controller: naked margin vault must have at least the dust limit of collateral"
-                );
-            }
-        } else {
-            (, bool isValidVault) = calculator.getExcessCollateral(_vault);
-            require(isValidVault, "Controller: invalid final vault state");
-        }
+        MarginVault.Vault memory vault = getVault(_owner, _vaultId);
+        (, bool isExcess) = calculator.getExcessCollateral(vault, marginType[_owner][_vaultId]);
+        require(isExcess, "Controller: invalid final vault state");
+        // check collateral dust limit if marginType == 1
+        require(
+            marginType[_owner][_vaultId] == 0 || calculator.verifyDustLimit(vault),
+            "Controller: naked margin vault must have at least the dust limit of collateral"
+        );
     }
 
     /**
@@ -767,14 +756,19 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
         require(_checkVaultId(_args.owner, _args.vaultId), "Controller: invalid vault id");
 
         MarginVault.Vault memory vault = getVault(_args.owner, _args.vaultId);
-        bool hasShort = _isNotEmpty(vault.shortOtokens);
-        bool hasLong = _isNotEmpty(vault.longOtokens);
+        OtokenInterface otoken;
+        {
+            bool hasShort = _isNotEmpty(vault.shortOtokens);
+            bool hasLong = _isNotEmpty(vault.longOtokens);
 
-        require(hasShort || hasLong, "Controller: Can't settle vault with no otoken");
+            require(hasShort || hasLong, "Controller: Can't settle vault with no otoken");
+            if (hasLong) {
+                OtokenInterface longOtoken = OtokenInterface(vault.longOtokens[0]);
 
-        OtokenInterface otoken = hasShort
-            ? OtokenInterface(vault.shortOtokens[0])
-            : OtokenInterface(vault.longOtokens[0]);
+                longOtoken.burnOtoken(address(pool), vault.longAmounts[0]);
+            }
+            otoken = hasShort ? OtokenInterface(vault.shortOtokens[0]) : OtokenInterface(vault.longOtokens[0]);
+        }
 
         (address collateral, address underlying, address strike, , uint256 expiry, ) = otoken.getOtokenDetails();
 
@@ -784,25 +778,8 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
             "Controller: asset prices not finalized yet"
         );
 
-        uint256 payout;
-        if (marginType[_args.owner][_args.vaultId] == 0) {
-            // regular max loss
-            // very important that we do not allow collateral updates after expiry.
-            (payout, ) = calculator.getExcessCollateral(vault);
-
-            if (hasLong) {
-                OtokenInterface longOtoken = OtokenInterface(vault.longOtokens[0]);
-
-                longOtoken.burnOtoken(address(pool), vault.longAmounts[0]);
-            }
-        } else {
-            // naked margin
-            // be careful, need to check isExcess!
-            // otherwise the vault is undercollateralized
-            bool isExcess;
-            (payout, isExcess) = calculator.getExcessNakedMargin(vault);
-            require(isExcess, "no collateral to payout.");
-        }
+        (uint256 payout, bool isExcess) = calculator.getExcessCollateral(vault, marginType[_args.owner][_args.vaultId]);
+        require(isExcess, "Controller: no collateral to payout");
 
         delete vaults[_args.owner][_args.vaultId];
 
@@ -867,28 +844,34 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
     mapping(address => mapping(uint256 => uint256)) internal marginType;
 
     function _liquidate(Actions.LiquidateArgs memory _args) internal notPartiallyPaused {
-        require(marginType[_args.owner][_args.vaultId] == 1, "vault is not naked margin.");
+        require(marginType[_args.owner][_args.vaultId] == 1, "Controller: vault is not naked margin");
+
         MarginVault.Vault memory vault = getVault(_args.owner, _args.vaultId);
         uint256 liquidationAmount = calculator.getLiquidationAmount(
             vault,
+            _args.amount,
             _args.roundId,
             lastCheckedMargin[_args.owner][_args.vaultId]
         );
 
-        address collateralAsset = vault.collateralAssets[0];
-        uint256 dustLimit = oracle.getDustLimit(collateralAsset);
         require(
-            _args.amount == vault.shortAmounts[0] || vault.collateralAmounts[0].sub(liquidationAmount) > dustLimit,
-            "Controller: partial liquidations must leave behind more than the dust limit"
+            _args.amount <= vault.shortAmounts[0],
+            "Controller: amount is greater than the short tokens in the vault"
         );
-
         // destroy the tokens
         OtokenInterface otoken = OtokenInterface(vault.shortOtokens[0]);
         vaults[_args.owner][_args.vaultId].removeShort(vault.shortOtokens[0], _args.amount, 0);
-        otoken.burnOtoken(_args.from, _args.amount);
+        otoken.burnOtoken(msg.sender, _args.amount);
 
-        // transfer collateral to liquidator
+        // transfer collateral to _args.to
+        address collateralAsset = vault.collateralAssets[0];
         vaults[_args.owner][_args.vaultId].removeCollateral(collateralAsset, liquidationAmount, 0);
         pool.transferToUser(collateralAsset, _args.to, liquidationAmount);
+
+        // verify dust limit
+        require(
+            calculator.verifyDustLimit(vault),
+            "Controller: a partial liquidation must leave at least the dust limit in the vault"
+        );
     }
 }

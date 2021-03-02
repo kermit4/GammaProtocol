@@ -132,7 +132,11 @@ contract MarginCalculator {
      * @return isExcess True if there is excess margin in the vault, False if there is a deficit of margin in the vault
      * if True, collateral can be taken out from the vault, if False, additional collateral needs to be added to vault
      */
-    function getExcessCollateral(MarginVault.Vault memory _vault) public view returns (uint256, bool) {
+    function getExcessCollateral(MarginVault.Vault memory _vault, uint256 _marginType)
+        public
+        view
+        returns (uint256, bool)
+    {
         // get vault details
         VaultDetails memory vaultDetails = getVaultDetails(_vault);
         // include all the checks for to ensure the vault is valid
@@ -150,7 +154,7 @@ contract MarginCalculator {
         }
 
         // get required margin, denominated in collateral
-        FPI.FixedPointInt memory collateralRequired = _getMarginRequired(_vault, vaultDetails);
+        FPI.FixedPointInt memory collateralRequired = _getMarginRequired(_vault, vaultDetails, _marginType);
         FPI.FixedPointInt memory excessCollateral = collateralAmount.sub(collateralRequired);
 
         bool isExcess = excessCollateral.isGreaterThanOrEqual(ZERO);
@@ -199,24 +203,83 @@ contract MarginCalculator {
         }
     }
 
-    /**
-     * @notice calculate the amount of collateral needed for a vault
-     * @dev vault passed in has already passed the checkIsValidVault function
-     * @param _vault theoretical vault that needs to be checked
-     * @return marginRequired the minimal amount of collateral needed in a vault, denominated in collateral
-     */
-    function _getMarginRequired(MarginVault.Vault memory _vault, VaultDetails memory _vaultDetails)
+    function _getExpiredVaultProceeds(MarginVault.Vault memory _vault, VaultDetails memory _vaultDetails)
         internal
         view
         returns (FPI.FixedPointInt memory)
     {
+        uint256 otokenExpiry = _vaultDetails.hasShort
+            ? _vaultDetails.shortExpiryTimestamp
+            : _vaultDetails.longExpiryTimestamp;
+
         FPI.FixedPointInt memory shortAmount = _vaultDetails.hasShort
             ? FPI.fromScaledUint(_vault.shortAmounts[0], BASE)
             : ZERO;
         FPI.FixedPointInt memory longAmount = _vaultDetails.hasLong
             ? FPI.fromScaledUint(_vault.longAmounts[0], BASE)
             : ZERO;
+        // address otokenUnderlyingAsset = _vaultDetails.hasShort
+        //     ? _vaultDetails.shortUnderlyingAsset
+        //     : _vaultDetails.longUnderlyingAsset;
+        address otokenCollateralAsset = _vaultDetails.hasShort
+            ? _vaultDetails.shortCollateralAsset
+            : _vaultDetails.longCollateralAsset;
+        address otokenStrikeAsset = _vaultDetails.hasShort
+            ? _vaultDetails.shortStrikeAsset
+            : _vaultDetails.longStrikeAsset;
+        bool isPut = _vaultDetails.hasShort ? _vaultDetails.isShortPut : _vaultDetails.isLongPut;
 
+        FPI.FixedPointInt memory valueInStrike;
+        FPI.FixedPointInt memory shortCashValue;
+        {
+            shortCashValue = _vaultDetails.hasShort
+                ? _getExpiredCashValue(
+                    _vaultDetails.shortUnderlyingAsset,
+                    _vaultDetails.shortStrikeAsset,
+                    _vaultDetails.shortExpiryTimestamp,
+                    _vaultDetails.shortStrikePrice,
+                    isPut
+                )
+                : ZERO;
+            FPI.FixedPointInt memory longCashValue = _vaultDetails.hasLong
+                ? _getExpiredCashValue(
+                    _vaultDetails.longUnderlyingAsset,
+                    _vaultDetails.longStrikeAsset,
+                    _vaultDetails.longExpiryTimestamp,
+                    _vaultDetails.longStrikePrice,
+                    isPut
+                )
+                : ZERO;
+            valueInStrike = _getExpiredSpreadCashValue(shortAmount, longAmount, shortCashValue, longCashValue);
+        }
+
+        // convert amount to be denominated in collateral
+        return _convertAmountOnExpiryPrice(valueInStrike, otokenStrikeAsset, otokenCollateralAsset, otokenExpiry);
+    }
+
+    /**
+     * @notice calculate the amount of collateral needed for a vault
+     * @dev vault passed in has already passed the checkIsValidVault function
+     * @param _vault theoretical vault that needs to be checked
+     * @return marginRequired the minimal amount of collateral needed in a vault, denominated in collateral
+     */
+    function _getMarginRequired(
+        MarginVault.Vault memory _vault,
+        VaultDetails memory _vaultDetails,
+        uint256 _marginType
+    ) internal view returns (FPI.FixedPointInt memory) {
+        uint256 otokenExpiry = _vaultDetails.hasShort
+            ? _vaultDetails.shortExpiryTimestamp
+            : _vaultDetails.longExpiryTimestamp;
+
+        if (now > otokenExpiry) return _getExpiredVaultProceeds(_vault, _vaultDetails);
+
+        FPI.FixedPointInt memory shortAmount = _vaultDetails.hasShort
+            ? FPI.fromScaledUint(_vault.shortAmounts[0], BASE)
+            : ZERO;
+        FPI.FixedPointInt memory longAmount = _vaultDetails.hasLong
+            ? FPI.fromScaledUint(_vault.longAmounts[0], BASE)
+            : ZERO;
         address otokenUnderlyingAsset = _vaultDetails.hasShort
             ? _vaultDetails.shortUnderlyingAsset
             : _vaultDetails.longUnderlyingAsset;
@@ -226,13 +289,10 @@ contract MarginCalculator {
         address otokenStrikeAsset = _vaultDetails.hasShort
             ? _vaultDetails.shortStrikeAsset
             : _vaultDetails.longStrikeAsset;
-        uint256 otokenExpiry = _vaultDetails.hasShort
-            ? _vaultDetails.shortExpiryTimestamp
-            : _vaultDetails.longExpiryTimestamp;
-        bool expired = now > otokenExpiry;
         bool isPut = _vaultDetails.hasShort ? _vaultDetails.isShortPut : _vaultDetails.isLongPut;
 
-        if (!expired) {
+        // max loss
+        if (_marginType == 0) {
             FPI.FixedPointInt memory shortStrike = _vaultDetails.hasShort
                 ? FPI.fromScaledUint(_vaultDetails.shortStrikePrice, BASE)
                 : ZERO;
@@ -259,36 +319,26 @@ contract MarginCalculator {
                 // convert amount to be denominated in collateral
                 return _convertAmountOnLivePrice(underlyingNeeded, otokenUnderlyingAsset, otokenCollateralAsset);
             }
-        } else {
-            FPI.FixedPointInt memory shortCashValue = _vaultDetails.hasShort
-                ? _getExpiredCashValue(
-                    _vaultDetails.shortUnderlyingAsset,
-                    _vaultDetails.shortStrikeAsset,
-                    _vaultDetails.shortExpiryTimestamp,
-                    _vaultDetails.shortStrikePrice,
-                    isPut
-                )
-                : ZERO;
-            FPI.FixedPointInt memory longCashValue = _vaultDetails.hasLong
-                ? _getExpiredCashValue(
-                    _vaultDetails.longUnderlyingAsset,
-                    _vaultDetails.longStrikeAsset,
-                    _vaultDetails.longExpiryTimestamp,
-                    _vaultDetails.longStrikePrice,
-                    isPut
-                )
-                : ZERO;
-
-            FPI.FixedPointInt memory valueInStrike = _getExpiredSpreadCashValue(
-                shortAmount,
-                longAmount,
-                shortCashValue,
-                longCashValue
-            );
-
-            // convert amount to be denominated in collateral
-            return _convertAmountOnExpiryPrice(valueInStrike, otokenStrikeAsset, otokenCollateralAsset, otokenExpiry);
         }
+        // naked margin
+        if (_marginType == 1) {
+            // get current price
+            uint256 collateralRequiredPerOtoken;
+            uint256 shortCollateralDecimals = _vaultDetails.shortCollateralDecimals;
+            {
+                uint256 currentPrice = oracle.getPrice(_vaultDetails.shortUnderlyingAsset);
+                collateralRequiredPerOtoken = getNakedMarginRequirements(
+                    _vaultDetails.shortStrikePrice,
+                    currentPrice,
+                    otokenExpiry.sub(now),
+                    isPut,
+                    shortCollateralDecimals
+                );
+            }
+            return FPI.fromScaledUint(collateralRequiredPerOtoken, shortCollateralDecimals).mul(shortAmount);
+        }
+        // else
+        revert("MarginCalculator: invalid vaultType");
     }
 
     /**
@@ -560,64 +610,6 @@ contract MarginCalculator {
         return vaultDetails;
     }
 
-    /**
-     * @notice convert an amount of otoken to current amount of collateral, based on historical price
-     * @param _vault, the vault to be checked
-     * @return amount of excess margin
-     */
-    function getExcessNakedMargin(MarginVault.Vault memory _vault) external view returns (uint256, bool) {
-        VaultDetails memory vaultDetails = getVaultDetails(_vault);
-        _checkIsValidVault(_vault, vaultDetails);
-        if (!vaultDetails.hasShort) {
-            if (vaultDetails.hasCollateral) return (_vault.collateralAmounts[0], true);
-            return (0, true);
-        }
-
-        uint256 otokenExpiry = vaultDetails.shortExpiryTimestamp;
-        bool expired = now > otokenExpiry;
-
-        if (expired) {
-            FPI.FixedPointInt memory collateralAmount = FPI.fromScaledUint(
-                _vault.collateralAmounts[0],
-                vaultDetails.collateralDecimals
-            );
-            FPI.FixedPointInt memory shortCashValue = _getExpiredCashValue(
-                vaultDetails.shortUnderlyingAsset,
-                vaultDetails.shortStrikeAsset,
-                vaultDetails.shortExpiryTimestamp,
-                vaultDetails.shortStrikePrice,
-                vaultDetails.isShortPut
-            );
-
-            FPI.FixedPointInt memory excessCollateral = collateralAmount.sub(shortCashValue);
-            bool isExcess = excessCollateral.isGreaterThanOrEqual(ZERO);
-            // if is excess, truncate the tailing digits in excessCollateralExternal calculation
-            uint256 excessCollateralExternal = excessCollateral.toScaledUint(
-                vaultDetails.shortCollateralDecimals,
-                isExcess
-            );
-            return (excessCollateralExternal, isExcess);
-        } else {
-            // get current price
-            uint256 collateralAmount = vaultDetails.hasCollateral ? _vault.collateralAmounts[0] : 0;
-            uint256 currentPrice = oracle.getPrice(vaultDetails.shortUnderlyingAsset);
-            uint256 shortAmount = _vault.shortAmounts[0];
-            uint256 collateralRequiredPerOtoken = getNakedMarginRequirements(
-                vaultDetails.shortStrikePrice,
-                currentPrice,
-                otokenExpiry.sub(now),
-                vaultDetails.isShortPut,
-                vaultDetails.shortCollateralDecimals
-            );
-            uint256 collateralRequired = collateralRequiredPerOtoken.mul(shortAmount).div(10**BASE);
-            if (collateralAmount > collateralRequired) {
-                return (collateralAmount.sub(collateralRequired), true);
-            } else {
-                return (collateralRequired.sub(collateralAmount), false);
-            }
-        }
-    }
-
     // gets the margin requirements given a historical roundId
     function getHistoricalExcessNakedMargin(
         MarginVault.Vault memory _vault,
@@ -716,36 +708,35 @@ contract MarginCalculator {
 
     function getLiquidationAmount(
         MarginVault.Vault memory _vault,
+        uint256 _amount,
         uint256 _roundId,
         uint256 _lastCheckedMargin
     ) external view returns (uint256) {
         VaultDetails memory vaultDetails = getVaultDetails(_vault);
+        require(_amount > 0, "MarginCalculator: amount must be positive");
         require(vaultDetails.hasShort, "MarginCalculator: Vault has no short token");
+        require(now < vaultDetails.shortExpiryTimestamp, "MarginCalculator: short otoken has already expired");
+
         (uint256 price, uint256 startTime) = oracle.getHistoricalPrice(vaultDetails.shortUnderlyingAsset, _roundId);
 
         require(startTime < now, "MarginCalculator: invalid startTime");
+        uint256 timeElapsed = now.sub(startTime);
         require(
             startTime > _lastCheckedMargin,
             "MarginCalculator: vault was adjusted more recently than the timestamp of the historical price"
         );
-        require(now < vaultDetails.shortExpiryTimestamp, "MarginCalculator: short otoken has already expired");
 
-        bool isExcess;
-        (, isExcess) = getHistoricalExcessNakedMargin(_vault, price, startTime);
+        (, bool isExcess) = getHistoricalExcessNakedMargin(_vault, price, startTime);
         require(!isExcess, "MarginCalculator: vault was not under-collateralized at the roundId");
-        uint256 timeElapsed = now.sub(startTime);
-        // watch decimals
+
         uint256 B = _vault.collateralAmounts[0].mul(10**BASE).div(_vault.shortAmounts[0]);
-
-        if (timeElapsed > AUCTION_LENGTH) return B;
-
-        // deviation = D*S
-
-        uint256 A;
-        // determine cash value
-        {
+        uint256 salePrice;
+        if (timeElapsed > AUCTION_LENGTH) {
+            salePrice = B;
+        } else {
             uint256 deviation = deviationFactor.mul(price).div(10**deviationDecimals);
             uint256 strike = vaultDetails.shortStrikePrice;
+            uint256 A;
             if (vaultDetails.isShortPut) {
                 // put, usdc
                 if (strike <= price + deviation)
@@ -759,8 +750,21 @@ contract MarginCalculator {
                     // (CV - D*S)/S
                 else A = strike.sub(price).sub(deviation).mul(10**vaultDetails.collateralDecimals).div(price);
             }
+            // interpolate from A to B
+            if (A > B) salePrice = B;
+            else salePrice = A.add(timeElapsed.mul(B.sub(A)).div(AUCTION_LENGTH));
         }
 
-        return A.add(timeElapsed.mul(B.sub(A)).div(AUCTION_LENGTH));
+        return salePrice.mul(_amount).div(10**BASE);
+    }
+
+    function verifyDustLimit(MarginVault.Vault memory _vault) external view returns (bool) {
+        if (_vault.collateralAssets.length == 0) return true;
+        require(
+            oracle.getDustLimit(_vault.collateralAssets[0]) > 0,
+            "MarginCalculator: unsupported asset, no dust limit"
+        );
+        if (_vault.collateralAmounts[0] > oracle.getDustLimit(_vault.collateralAssets[0])) return true;
+        return false;
     }
 }

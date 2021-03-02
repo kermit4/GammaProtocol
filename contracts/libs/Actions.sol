@@ -145,11 +145,11 @@ library Actions {
     }
 
     struct LiquidateArgs {
-        // address of the account owner
+        // address of the vault owner
         address owner;
         // index of the vault to which is to be settled
         uint256 vaultId;
-        address from;
+        // the recipient of the collateral
         address to;
         // otoken amount to burn
         uint256 amount;
@@ -303,7 +303,6 @@ library Actions {
             LiquidateArgs({
                 owner: _args.owner,
                 vaultId: _args.vaultId,
-                from: _args.secondAddress,
                 to: _args.secondAddress,
                 amount: _args.amount,
                 roundId: _args.index

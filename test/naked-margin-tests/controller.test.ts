@@ -41,8 +41,8 @@ enum ActionType {
   SettleVault,
   Redeem,
   Call,
-  InvalidAction,
   Liquidate,
+  InvalidAction,
 }
 
 contract(
@@ -370,7 +370,7 @@ contract(
       })
     })
 
-    describe('_liquidate', async () => {
+    describe('liquidate a max loss vault', async () => {
       let shortOtoken: MockOtokenInstance
       let now: BigNumber
       before(async () => {
@@ -390,10 +390,102 @@ contract(
           true,
         )
         const amountToMint = createTokenAmount(1)
-        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
-        await shortOtoken.approve(marginPool.address, amountToMint, {from: accountOwner2})
+        // await shortOtoken.approve(marginPool.address, amountToMint, {from: accountOwner2})
         // accountOwner1 deposits collateral and mints short tokens
-        const collateralToDeposit = createTokenAmount(100, usdcDecimals)
+        const collateralToDeposit = createTokenAmount(200, usdcDecimals)
+
+        const actionArgs = [
+          {
+            actionType: ActionType.OpenVault,
+            owner: accountOwner1,
+            secondAddress: ZERO_ADDR,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '0',
+            // max loss
+            index: '0',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.MintShortOption,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: shortOtoken.address,
+            vaultId: vaultCounter.toString(),
+            amount: amountToMint,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await oracle.setRealTimePrice(weth.address, new BigNumber('1000e8'))
+        await whitelist.whitelistOtoken(shortOtoken.address)
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await controllerProxy.operate(actionArgs, {from: accountOwner1})
+      })
+
+      it('should not liquidate', async () => {
+        // const roundId = 15
+        // await time.increase(time.duration.hours(12))
+        // // set historical price for one minute after the minting
+        // await oracle.setHistoricalPrice(weth.address, roundId + 1, new BigNumber('1e8'), now.plus(60))
+        const amountToMint = createTokenAmount(1)
+        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
+
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '0',
+            // roundId
+            index: '1',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner2}),
+          'Controller: vault is not naked margin',
+        )
+      })
+    })
+
+    describe('liquidate a naked margin vault with an expired token', async () => {
+      let shortOtoken: MockOtokenInstance
+      let now: BigNumber
+      before(async () => {
+        vaultCounter += 1
+        const expiryTime = new BigNumber(60 * 60 * 24) // after 1 day
+        shortOtoken = await MockOtoken.new()
+        now = new BigNumber(await time.latest())
+        // initialize new short otoken
+        // weth put with usdc collateral
+        await shortOtoken.init(
+          addressBook.address,
+          weth.address,
+          usdc.address,
+          usdc.address,
+          createTokenAmount(200),
+          now.plus(expiryTime),
+          true,
+        )
+        const amountToMint = createTokenAmount(1)
+        // await shortOtoken.approve(marginPool.address, amountToMint, {from: accountOwner2})
+        // accountOwner1 deposits collateral and mints short tokens
+        const collateralToDeposit = createTokenAmount(200, usdcDecimals)
 
         const actionArgs = [
           {
@@ -435,45 +527,257 @@ contract(
         await controllerProxy.operate(actionArgs, {from: accountOwner1})
       })
 
-      it('should not revert', async () => {
-        const roundId = 15
-        await time.increase(time.duration.hours(12))
-        // set historical price for one minute after the minting
-        await oracle.setHistoricalPrice(weth.address, roundId, new BigNumber('1e8'), now.plus(60))
+      it('should not liquidate', async () => {
+        // const roundId = 15
+        await time.increase(time.duration.days(2))
+        // // set historical price for one minute after the minting
+        // await oracle.setHistoricalPrice(weth.address, roundId + 1, new BigNumber('1e8'), now.plus(60))
+        const amountToMint = createTokenAmount(1)
+        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
 
         const actionArgs = [
           {
             actionType: ActionType.Liquidate,
             owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '1',
+            // roundId
+            index: '1',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner2}),
+          'MarginCalculator: short otoken has already expired',
+        )
+      })
+    })
+
+    describe('should not be liquidatable if no short otoken', async () => {
+      let shortOtoken: MockOtokenInstance
+      let now: BigNumber
+      before(async () => {
+        vaultCounter += 1
+        const expiryTime = new BigNumber(60 * 60 * 24) // after 1 day
+        shortOtoken = await MockOtoken.new()
+        now = new BigNumber(await time.latest())
+        // initialize new short otoken
+        // weth put with usdc collateral
+        await shortOtoken.init(
+          addressBook.address,
+          weth.address,
+          usdc.address,
+          usdc.address,
+          createTokenAmount(200),
+          now.plus(expiryTime),
+          true,
+        )
+        const amountToMint = createTokenAmount(1)
+        // await shortOtoken.approve(marginPool.address, amountToMint, {from: accountOwner2})
+        // accountOwner1 deposits collateral and mints short tokens
+        const collateralToDeposit = createTokenAmount(200, usdcDecimals)
+
+        const actionArgs = [
+          {
+            actionType: ActionType.OpenVault,
+            owner: accountOwner1,
             secondAddress: ZERO_ADDR,
             asset: ZERO_ADDR,
             vaultId: vaultCounter.toString(),
             amount: '0',
+            // naked margin
+            index: '1',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await oracle.setRealTimePrice(weth.address, new BigNumber('1000e8'))
+        await whitelist.whitelistOtoken(shortOtoken.address)
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await controllerProxy.operate(actionArgs, {from: accountOwner1})
+      })
+
+      it('should not liquidate', async () => {
+        // const roundId = 15
+
+        // // set historical price for one minute after the minting
+        // await oracle.setHistoricalPrice(weth.address, roundId + 1, new BigNumber('1e8'), now.plus(60))
+        const amountToMint = createTokenAmount(1)
+        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
+
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '1',
             // roundId
-            index: roundId.toString(),
+            index: '1',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner2}),
+          'MarginCalculator: Vault has no short token',
+        )
+      })
+    })
+    describe('liquidatable vault', async () => {
+      let shortOtoken: MockOtokenInstance
+      let now: BigNumber
+      before(async () => {
+        vaultCounter += 1
+        const expiryTime = new BigNumber(60 * 60 * 24) // after 1 day
+        shortOtoken = await MockOtoken.new()
+        now = new BigNumber(await time.latest())
+        // initialize new short otoken
+        // weth put with usdc collateral
+        await shortOtoken.init(
+          addressBook.address,
+          weth.address,
+          usdc.address,
+          usdc.address,
+          createTokenAmount(200),
+          now.plus(expiryTime),
+          true,
+        )
+        const amountToMint = createTokenAmount(1)
+        // await shortOtoken.approve(marginPool.address, amountToMint, {from: accountOwner2})
+        // accountOwner1 deposits collateral and mints short tokens
+        const collateralToDeposit = createTokenAmount(50, usdcDecimals)
+
+        const actionArgs = [
+          {
+            actionType: ActionType.OpenVault,
+            owner: accountOwner1,
+            secondAddress: ZERO_ADDR,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '0',
+            // naked margin
+            index: '1',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.MintShortOption,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: shortOtoken.address,
+            vaultId: vaultCounter.toString(),
+            amount: amountToMint,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await oracle.setRealTimePrice(weth.address, new BigNumber('1000e8'))
+        await whitelist.whitelistOtoken(shortOtoken.address)
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await controllerProxy.operate(actionArgs, {from: accountOwner1})
+
+        const roundId = 15
+        await time.increase(time.duration.hours(2))
+        // // set historical price for one minute after the minting
+        await oracle.setHistoricalPrice(weth.address, roundId, new BigNumber('1e8'), now.plus(60))
+        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
+      })
+
+      it('should revert if amount is 0', async () => {
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '0',
+            // roundId
+            index: '15',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner2}),
+          'MarginCalculator: amount must be positive',
+        )
+      })
+
+      it('should revert if amount is greater than the short amount', async () => {
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: createTokenAmount(2),
+            // roundId
+            index: '15',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner2}),
+          'Controller: amount is greater than the short tokens in the vault',
+        )
+      })
+
+      it('should liquidate if amount is 1', async () => {
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '1',
+            // roundId
+            index: '15',
             data: ZERO_ADDR,
           },
         ]
 
         await controllerProxy.operate(actionArgs, {from: accountOwner2})
-        assert.equal(5, 5)
       })
     })
+
+    // should revert if amount is greater than the amount the liquidator posseses
+
+    // describe('should not be liquidatable if adjusted recently')
+
+    // describe('should be liquidatable for the full amount if the auction period has ended')
+
+    // covered
+    // describe('should be able to partially liquidate a vault')
+
+    // describe('should not be allowed to partially liquidate *and* leave less than the dust limit')
   },
 )
-
-// it('should not be liquidatable if short otoken is expired')
-
-// it('should not be liquidatable if not naked margin')
-
-// it('should not be liquidatable if no short otoken')
-
-// it('should not be liquidatable if adjusted recently')
-
-// it('should be liquidatable for the full amount if the auction period has ended')
-
-// it('should be able to partially liquidate a vault')
-
-// it('should not be allowed to pay back more than the vault requires')
-
-// it('should not be allowed to partially liquidate *and* leave less than the dust limit')
