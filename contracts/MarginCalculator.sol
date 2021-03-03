@@ -759,12 +759,11 @@ contract MarginCalculator {
     }
 
     function verifyDustLimit(MarginVault.Vault memory _vault) external view returns (bool) {
-        if (_vault.collateralAssets.length == 0) return true;
-        require(
-            oracle.getDustLimit(_vault.collateralAssets[0]) > 0,
-            "MarginCalculator: unsupported asset, no dust limit"
-        );
-        if (_vault.collateralAmounts[0] > oracle.getDustLimit(_vault.collateralAssets[0])) return true;
+        // if there is no short token, we don't require the dust limit.
+        if (_vault.shortAmounts.length == 0 || _vault.shortAmounts[0] == 0) return true;
+        uint256 dustLimit = oracle.getDustLimit(_vault.collateralAssets[0]);
+        require(dustLimit > 0, "MarginCalculator: unsupported asset, no dust limit");
+        if (_vault.collateralAmounts[0] > dustLimit) return true;
         return false;
     }
 }

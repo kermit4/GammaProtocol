@@ -870,7 +870,7 @@ contract Controller is Initializable, OwnableUpgradeSafe, ReentrancyGuardUpgrade
 
         // verify dust limit
         require(
-            calculator.verifyDustLimit(vault),
+            _args.amount == vault.shortAmounts[0] || calculator.verifyDustLimit(vault),
             "Controller: a partial liquidation must leave at least the dust limit in the vault"
         );
     }

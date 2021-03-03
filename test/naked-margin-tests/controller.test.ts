@@ -158,7 +158,7 @@ contract(
         )
       })
 
-      it('should revert if collateral is not above the DUST limit', async () => {
+      it('should not revert if collateral is not above the DUST limit but there is no short token', async () => {
         const collateralToDeposit = createTokenAmount(1, usdcDecimals)
         const actionArgs = [
           {
@@ -176,10 +176,10 @@ contract(
         await whitelist.whitelistCollateral(usdc.address)
         await oracle.setDustLimit(usdc.address, createTokenAmount(100, usdcDecimals))
         await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
-        await expectRevert(
-          controllerProxy.operate(actionArgs, {from: accountOwner1}),
-          'Controller: naked margin vault must have at least the dust limit of collateral',
-        )
+        // await expectRevert(
+        //   controllerProxy.operate(actionArgs, {from: accountOwner1}),
+        //   'Controller: naked margin vault must have at least the dust limit of collateral',
+        // )
       })
 
       it('should not be allowed to use long as collateral', async () => {
@@ -705,7 +705,6 @@ contract(
         await time.increase(time.duration.hours(2))
         // // set historical price for one minute after the minting
         await oracle.setHistoricalPrice(weth.address, roundId, new BigNumber('1e8'), now.plus(60))
-        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
       })
 
       it('should revert if amount is 0', async () => {
@@ -750,7 +749,7 @@ contract(
         )
       })
 
-      it('should liquidate if amount is 1', async () => {
+      it('should revert if amount is greater than the amount the liquidator posseses', async () => {
         const actionArgs = [
           {
             actionType: ActionType.Liquidate,
@@ -765,19 +764,191 @@ contract(
           },
         ]
 
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner2}),
+          'ERC20: burn amount exceeds balance',
+        )
+      })
+
+      it('should partially liquidatable if amount is below liquidators balance of otokens', async () => {
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '1',
+            // roundId
+            index: '15',
+            data: ZERO_ADDR,
+          },
+        ]
+        const amountToMint = createTokenAmount(1)
+        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
         await controllerProxy.operate(actionArgs, {from: accountOwner2})
+      })
+
+      it('should not be liquidatable if adjusted recently', async () => {
+        const collateralToDeposit = createTokenAmount(50, usdcDecimals)
+        const actionArgs1 = [
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await controllerProxy.operate(actionArgs1, {from: accountOwner1})
+
+        const actionArgs2 = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '1',
+            // roundId
+            index: '15',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await expectRevert(
+          controllerProxy.operate(actionArgs2, {from: accountOwner2}),
+          'MarginCalculator: vault was adjusted more recently than the timestamp of the historical price',
+        )
       })
     })
 
-    // should revert if amount is greater than the amount the liquidator posseses
+    describe('liquidatable vault (auction has ended)', async () => {
+      let shortOtoken: MockOtokenInstance
+      let now: BigNumber
+      before(async () => {
+        vaultCounter += 1
+        const expiryTime = new BigNumber(60 * 60 * 72) // after 3 day
+        shortOtoken = await MockOtoken.new()
+        now = new BigNumber(await time.latest())
+        // initialize new short otoken
+        // weth put with usdc collateral
+        await shortOtoken.init(
+          addressBook.address,
+          weth.address,
+          usdc.address,
+          usdc.address,
+          createTokenAmount(200),
+          now.plus(expiryTime),
+          true,
+        )
+        const amountToMint = createTokenAmount(1)
+        await shortOtoken.mintOtoken(accountOwner2, amountToMint)
+        // accountOwner1 deposits collateral and mints short tokens
+        const collateralToDeposit = createTokenAmount(50, usdcDecimals)
 
-    // describe('should not be liquidatable if adjusted recently')
+        const actionArgs = [
+          {
+            actionType: ActionType.OpenVault,
+            owner: accountOwner1,
+            secondAddress: ZERO_ADDR,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: '0',
+            // naked margin
+            index: '1',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.DepositCollateral,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: usdc.address,
+            vaultId: vaultCounter.toString(),
+            amount: collateralToDeposit,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+          {
+            actionType: ActionType.MintShortOption,
+            owner: accountOwner1,
+            secondAddress: accountOwner1,
+            asset: shortOtoken.address,
+            vaultId: vaultCounter.toString(),
+            amount: amountToMint,
+            index: '0',
+            data: ZERO_ADDR,
+          },
+        ]
 
-    // describe('should be liquidatable for the full amount if the auction period has ended')
+        await oracle.setRealTimePrice(weth.address, new BigNumber('1000e8'))
+        await whitelist.whitelistOtoken(shortOtoken.address)
+        await usdc.approve(marginPool.address, collateralToDeposit, {from: accountOwner1})
+        await controllerProxy.operate(actionArgs, {from: accountOwner1})
+        await oracle.setDustLimit(usdc.address, createTokenAmount(50, usdcDecimals))
 
-    // covered
-    // describe('should be able to partially liquidate a vault')
+        const roundId = 20
+        // set historical price for one minute after the minting
+        await oracle.setHistoricalPrice(weth.address, roundId, new BigNumber('1e8'), now.plus(60))
+        await time.increase(time.duration.hours(25))
+      })
 
-    // describe('should not be allowed to partially liquidate *and* leave less than the dust limit')
+      // FIX + ADD CHECK BALANCES BEFORE AND AFTER
+      it('should not be allowed to partially liquidate *and* leave less than the dust limit', async () => {
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: createTokenAmount(0.999),
+            // roundId
+            index: '20',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        await expectRevert(
+          controllerProxy.operate(actionArgs, {from: accountOwner2}),
+          'Controller: a partial liquidation must leave at least the dust limit in the vault',
+        )
+      })
+
+      it('should be liquidatable for the full amount if the auction period has ended', async () => {
+        const shortAmount = createTokenAmount(1)
+        const actionArgs = [
+          {
+            actionType: ActionType.Liquidate,
+            owner: accountOwner1,
+            secondAddress: accountOwner2,
+            asset: ZERO_ADDR,
+            vaultId: vaultCounter.toString(),
+            amount: shortAmount,
+            // roundId
+            index: '20',
+            data: ZERO_ADDR,
+          },
+        ]
+
+        // BEFORE
+        assert.equal((await shortOtoken.balanceOf(accountOwner2)).toString(), shortAmount.toString())
+        assert.equal((await usdc.balanceOf(accountOwner2)).toString(), '0')
+
+        await controllerProxy.operate(actionArgs, {from: accountOwner2})
+
+        // // AFTER
+        assert.equal((await shortOtoken.balanceOf(accountOwner2)).toString(), '0')
+        assert.equal((await usdc.balanceOf(accountOwner2)).toString(), createTokenAmount(50, usdcDecimals))
+
+        const vault = await controllerProxy.getVault(accountOwner1, vaultCounter.toString())
+        assert.equal(vault.shortAmounts[0].toString(), '0')
+        assert.equal(vault.collateralAmounts[0].toString(), '0')
+      })
+    })
   },
 )

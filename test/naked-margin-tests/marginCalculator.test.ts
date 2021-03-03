@@ -438,7 +438,7 @@ contract('MarginCalculator', () => {
       )
       const lastCheckedMargin = now - time.duration.days(1).toNumber()
       await expectRevert(
-        calculator.getLiquidationAmount(emptyVault, futureRoundId, lastCheckedMargin),
+        calculator.getLiquidationAmount(emptyVault, '1', futureRoundId, lastCheckedMargin),
         'MarginCalculator: Vault has no short token',
       )
     })
@@ -446,7 +446,7 @@ contract('MarginCalculator', () => {
     it('should revert if startTime is in the future', async () => {
       const lastCheckedMargin = now + time.duration.days(1).toNumber()
       await expectRevert(
-        calculator.getLiquidationAmount(vault, futureRoundId, lastCheckedMargin),
+        calculator.getLiquidationAmount(vault, '1', futureRoundId, lastCheckedMargin),
         'MarginCalculator: invalid startTime',
       )
     })
@@ -454,7 +454,7 @@ contract('MarginCalculator', () => {
     it('should revert if lastCheckedMargin is after the start time', async () => {
       const lastCheckedMargin = now + time.duration.days(1).toNumber()
       await expectRevert(
-        calculator.getLiquidationAmount(vault, roundId, lastCheckedMargin),
+        calculator.getLiquidationAmount(vault, '1', roundId, lastCheckedMargin),
         'MarginCalculator: vault was adjusted more recently than the timestamp of the historical price',
       )
     })
@@ -471,7 +471,7 @@ contract('MarginCalculator', () => {
 
       const lastCheckedMargin = now - time.duration.days(30).toNumber()
       await expectRevert(
-        calculator.getLiquidationAmount(expiredVault, roundId, lastCheckedMargin),
+        calculator.getLiquidationAmount(expiredVault, '1', roundId, lastCheckedMargin),
         'MarginCalculator: short otoken has already expired',
       )
     })
@@ -488,7 +488,7 @@ contract('MarginCalculator', () => {
 
       const lastCheckedMargin = now - time.duration.days(30).toNumber()
       await expectRevert(
-        calculator.getLiquidationAmount(expiredVault, roundId, lastCheckedMargin),
+        calculator.getLiquidationAmount(expiredVault, '1', roundId, lastCheckedMargin),
         'MarginCalculator: short otoken has already expired',
       )
     })
@@ -506,7 +506,7 @@ contract('MarginCalculator', () => {
       // roundId corresponds to 5 hours ago
       const lastCheckedMargin = now - time.duration.hours(6).toNumber()
       await expectRevert(
-        calculator.getLiquidationAmount(vault, roundId, lastCheckedMargin),
+        calculator.getLiquidationAmount(vault, '1', roundId, lastCheckedMargin),
         'MarginCalculator: vault was not under-collateralized at the roundId',
       )
     })
@@ -523,7 +523,7 @@ contract('MarginCalculator', () => {
 
       // roundId corresponds to 5 hours ago
       const lastCheckedMargin = now - time.duration.hours(6).toNumber()
-      const liquidationAmount = await calculator.getLiquidationAmount(vault, roundId, lastCheckedMargin)
+      const liquidationAmount = await calculator.getLiquidationAmount(vault, scaleNum(1), roundId, lastCheckedMargin)
       assert.equal(liquidationAmount.gt(0), true)
     })
 
@@ -542,7 +542,7 @@ contract('MarginCalculator', () => {
       const timestamp = now - time.duration.days(2).toNumber()
       const roundId = 200
       await oracle.setHistoricalPrice(weth.address, roundId, ethPrice, timestamp)
-      const liquidationAmount = await calculator.getLiquidationAmount(vault, roundId, lastCheckedMargin)
+      const liquidationAmount = await calculator.getLiquidationAmount(vault, scaleNum(1), roundId, lastCheckedMargin)
       const expectedLiquidationAmount = new BigNumber(createTokenAmount(10, usdcDecimals))
         .times(10 ** 8)
         .div(scaleNum(1))
