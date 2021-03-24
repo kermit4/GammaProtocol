@@ -24,5 +24,6 @@
     * [SignedConverter](docs/contracts-documentation/libs/SignedConverter.md)
   * pricers
     * [ChainlinkPricer](docs/contracts-documentation/pricers/ChainlinkPricer.md)
+    * [UniswapTWAPPricer](docs/contracts-documentation/pricers/UniswapTWAPPricer.md)
     * [CompoundPricer](docs/contracts-documentation/pricers/CompoundPricer.md)
     * [USDCPricer](docs/contracts-documentation/pricers/USDCPricer.md)
